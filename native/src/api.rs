@@ -2,7 +2,7 @@ use crate::{
     Command, TsChannel, TsClient, TsEvent,
     AUDIO_DECODERS, AUDIO_DECODERS_STEREO, AUDIO_STREAM, CB_STATS, CLIENT_BUFFERS,
     COMMAND_TX, FRAME_SIZE, IDENTITY_STASH, PLAYED_SAMPLES, ACTIVE_CLIENT_IDS,
-    RUNTIME, STATE, SWIPE_DISCONNECT,
+    RUNTIME, STATE, SWIPE_DISCONNECT, OUTPUT_RESTART_REQUESTED,
 };
 
 use futures::prelude::*;
@@ -287,141 +287,7 @@ async fn do_connect(
 
     // --- Push-mode audio output (cpal) with sample-driven mixing ---
     spawn_maintenance_task();
-
-    let host = cpal::default_host();
-    if let Some(device) = host.default_output_device() {
-        let config = cpal::StreamConfig {
-            channels: 1,
-            sample_rate: cpal::SampleRate(48000),
-            buffer_size: cpal::BufferSize::Fixed(960),
-        };
-        match device.build_output_stream(
-            &config,
-            {
-                let current_mix_slot = std::cell::Cell::new(u64::MAX);
-                let current_mix_buf = std::cell::RefCell::new([0.0f32; FRAME_SIZE as usize]);
-                let cb_seq = std::cell::Cell::new(0u64);
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    // ── diagnostics: first 3 callbacks print liveness ──────────
-                    let seq = cb_seq.get();
-                    if seq < 3 {
-                        eprintln!("[cpal-stats] cb#{} data.len={} played_before={}",
-                            seq, data.len(), PLAYED_SAMPLES.load(Ordering::Relaxed));
-                        cb_seq.set(seq + 1);
-                    }
-                    // ── diagnostics: entry timing ────────────────────────────
-                    let cb_entry = std::time::Instant::now();
-                    let played = PLAYED_SAMPLES.load(Ordering::Relaxed);
-                    let played_before = played;
-                    // Consistency: next-callback expects this value
-                    let expected = CB_STATS.expected_next_played.load(Ordering::Relaxed);
-                    if expected != 0 && played_before != expected {
-                        CB_STATS.played_mismatches.fetch_add(1, Ordering::Relaxed);
-                    }
-                    let cb_elapsed_ns = cb_entry.elapsed().as_nanos() as u64;
-                    let last_ns = CB_STATS.last_cb_entry_ns.swap(cb_elapsed_ns, Ordering::Relaxed);
-                    if last_ns != 0 {
-                        CB_STATS.last_interval_us.store(
-                            cb_elapsed_ns.wrapping_sub(last_ns) / 1000, Ordering::Relaxed);
-                    }
-                    let mut slot = played / FRAME_SIZE;
-                    let mut offset = (played % FRAME_SIZE) as usize;
-                    let mut data_offset = 0usize;
-                    let mut mix_count = 0u64;
-
-                    while data_offset < data.len() {
-                        // Generate new mix frame when entering a new logical frame
-                        if slot != current_mix_slot.get() {
-                            mix_count += 1;
-                            let mut mix_buf = [0.0f32; FRAME_SIZE as usize];
-                            let mut active = 0u32;
-
-                            // Phase A: collect one frame from each active client via snapshot
-                            let client_ids = ACTIVE_CLIENT_IDS.load();
-                            for &client_id in client_ids.iter() {
-                                if let Some(buf) = CLIENT_BUFFERS.get(&client_id) {
-                                    let base_seq = buf.base_seq.load(Ordering::Relaxed);
-                                    if base_seq == 0 { continue; }
-                                    let base_slot = buf.base_slot.load(Ordering::Relaxed);
-                                    let expected_seq = slot.wrapping_sub(base_slot)
-                                        .wrapping_add(base_seq as u64);
-                                    let write_seq = buf.write_seq.load(Ordering::Acquire) as u64;
-                                    if write_seq >= expected_seq {
-                                        let idx = (expected_seq.wrapping_sub(base_seq as u64))
-                                            as usize % 32;
-                                        if let Some(frame) = buf.slots[idx].swap(None) {
-                                            let vol = f32::from_bits(
-                                                buf.volume.load(Ordering::Relaxed));
-                                            for i in 0..FRAME_SIZE as usize {
-                                                mix_buf[i] += frame[i] as f32 * vol;
-                                            }
-                                            active += 1;
-                                            buf.frame_pool.push(frame);
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Phase B: attenuate
-                            let atten = if active > 0 {
-                                1.0 / (active as f32).sqrt()
-                            } else {
-                                1.0
-                            };
-                            for s in &mut mix_buf {
-                                *s = (*s * atten).clamp(-32768.0, 32767.0) / 32768.0;
-                            }
-
-                            *current_mix_buf.borrow_mut() = mix_buf;
-                            current_mix_slot.set(slot);
-                        }
-
-                        // Copy from cached mix buffer to output
-                        let mix = current_mix_buf.borrow();
-                        let remaining_data = data.len() - data_offset;
-                        let remaining_frame = FRAME_SIZE as usize - offset;
-                        let copy = remaining_data.min(remaining_frame);
-
-                        data[data_offset..data_offset + copy]
-                            .copy_from_slice(&mix[offset..offset + copy]);
-
-                        data_offset += copy;
-                        offset += copy;
-                        if offset >= FRAME_SIZE as usize {
-                            offset = 0;
-                            slot += 1;
-                        }
-                    }
-
-                    // ── diagnostics: record stats ────────────────────────
-                    CB_STATS.callbacks.fetch_add(1, Ordering::Relaxed);
-                    CB_STATS.samples_total.fetch_add(data.len() as u64, Ordering::Relaxed);
-                    CB_STATS.mix_frames.fetch_add(mix_count, Ordering::Relaxed);
-                    // PLAYED_SAMPLES consistency: old value must equal played_before
-                    let old = PLAYED_SAMPLES.fetch_add(data.len() as u64, Ordering::Relaxed);
-                    if old != played_before {
-                        CB_STATS.played_mismatches.fetch_add(1, Ordering::Relaxed);
-                    }
-                    // Store expected value for next callback's entry check
-                    CB_STATS.expected_next_played.store(old + data.len() as u64, Ordering::Relaxed);
-                }
-            },
-            |err| eprintln!("cpal output error: {}", err),
-            None,
-        ) {
-            Ok(stream) => {
-                if stream.play().is_ok() {
-                    crate::AUDIO_STREAM.lock().unwrap().0 = Some(stream);
-                    eprintln!("cpal: output stream started (Default buffer, sample-driven)");
-                } else {
-                    eprintln!("cpal: play() failed");
-                }
-            }
-            Err(e) => eprintln!("cpal: build_output_stream failed: {}", e),
-        }
-    } else {
-        eprintln!("cpal: no output device");
-    }
+    restart_output_stream();
 
     RUNTIME.spawn(async move {
         let con = crate::CONNECTION_STASH
@@ -604,6 +470,164 @@ fn decode_to_client_buffer(audio_buf: InAudioBuf) {
     STATE.lock().talking_clients.insert(from_id, Instant::now());
 }
 
+/// Drop the current cpal output stream and rebuild it on the current default
+/// output device (same config and mixing callback as the initial build).
+/// Resets playback state exactly like `ts_stop_audio` — buffers are cleared
+/// and jitter/decoders are rebuilt on the next incoming audio.
+///
+/// Called on connect and, from the maintenance task, when
+/// `OUTPUT_RESTART_REQUESTED` is set (device route change or stream error).
+fn restart_output_stream() {
+    // Drop the old stream first so the new one is the only active consumer.
+    AUDIO_STREAM.lock().unwrap().0 = None;
+    CLIENT_BUFFERS.clear();
+    AUDIO_DECODERS.clear();
+    AUDIO_DECODERS_STEREO.clear();
+    PLAYED_SAMPLES.store(0, Ordering::Relaxed);
+    ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
+
+    let host = cpal::default_host();
+    if let Some(device) = host.default_output_device() {
+        let config = cpal::StreamConfig {
+            channels: 1,
+            sample_rate: cpal::SampleRate(48000),
+            buffer_size: cpal::BufferSize::Fixed(960),
+        };
+        match device.build_output_stream(
+            &config,
+            {
+                let current_mix_slot = std::cell::Cell::new(u64::MAX);
+                let current_mix_buf = std::cell::RefCell::new([0.0f32; FRAME_SIZE as usize]);
+                let cb_seq = std::cell::Cell::new(0u64);
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    // ── diagnostics: first 3 callbacks print liveness ──────────
+                    let seq = cb_seq.get();
+                    if seq < 3 {
+                        eprintln!("[cpal-stats] cb#{} data.len={} played_before={}",
+                            seq, data.len(), PLAYED_SAMPLES.load(Ordering::Relaxed));
+                        cb_seq.set(seq + 1);
+                    }
+                    // ── diagnostics: entry timing ────────────────────────────
+                    let cb_entry = std::time::Instant::now();
+                    let played = PLAYED_SAMPLES.load(Ordering::Relaxed);
+                    let played_before = played;
+                    // Consistency: next-callback expects this value
+                    let expected = CB_STATS.expected_next_played.load(Ordering::Relaxed);
+                    if expected != 0 && played_before != expected {
+                        CB_STATS.played_mismatches.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let cb_elapsed_ns = cb_entry.elapsed().as_nanos() as u64;
+                    let last_ns = CB_STATS.last_cb_entry_ns.swap(cb_elapsed_ns, Ordering::Relaxed);
+                    if last_ns != 0 {
+                        CB_STATS.last_interval_us.store(
+                            cb_elapsed_ns.wrapping_sub(last_ns) / 1000, Ordering::Relaxed);
+                    }
+                    let mut slot = played / FRAME_SIZE;
+                    let mut offset = (played % FRAME_SIZE) as usize;
+                    let mut data_offset = 0usize;
+                    let mut mix_count = 0u64;
+
+                    while data_offset < data.len() {
+                        // Generate new mix frame when entering a new logical frame
+                        if slot != current_mix_slot.get() {
+                            mix_count += 1;
+                            let mut mix_buf = [0.0f32; FRAME_SIZE as usize];
+                            let mut active = 0u32;
+
+                            // Phase A: collect one frame from each active client via snapshot
+                            let client_ids = ACTIVE_CLIENT_IDS.load();
+                            for &client_id in client_ids.iter() {
+                                if let Some(buf) = CLIENT_BUFFERS.get(&client_id) {
+                                    let base_seq = buf.base_seq.load(Ordering::Relaxed);
+                                    if base_seq == 0 { continue; }
+                                    let base_slot = buf.base_slot.load(Ordering::Relaxed);
+                                    let expected_seq = slot.wrapping_sub(base_slot)
+                                        .wrapping_add(base_seq as u64);
+                                    let write_seq = buf.write_seq.load(Ordering::Acquire) as u64;
+                                    if write_seq >= expected_seq {
+                                        let idx = (expected_seq.wrapping_sub(base_seq as u64))
+                                            as usize % 32;
+                                        if let Some(frame) = buf.slots[idx].swap(None) {
+                                            let vol = f32::from_bits(
+                                                buf.volume.load(Ordering::Relaxed));
+                                            for i in 0..FRAME_SIZE as usize {
+                                                mix_buf[i] += frame[i] as f32 * vol;
+                                            }
+                                            active += 1;
+                                            buf.frame_pool.push(frame);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Phase B: attenuate
+                            let atten = if active > 0 {
+                                1.0 / (active as f32).sqrt()
+                            } else {
+                                1.0
+                            };
+                            for s in &mut mix_buf {
+                                *s = (*s * atten).clamp(-32768.0, 32767.0) / 32768.0;
+                            }
+
+                            *current_mix_buf.borrow_mut() = mix_buf;
+                            current_mix_slot.set(slot);
+                        }
+
+                        // Copy from cached mix buffer to output
+                        let mix = current_mix_buf.borrow();
+                        let remaining_data = data.len() - data_offset;
+                        let remaining_frame = FRAME_SIZE as usize - offset;
+                        let copy = remaining_data.min(remaining_frame);
+
+                        data[data_offset..data_offset + copy]
+                            .copy_from_slice(&mix[offset..offset + copy]);
+
+                        data_offset += copy;
+                        offset += copy;
+                        if offset >= FRAME_SIZE as usize {
+                            offset = 0;
+                            slot += 1;
+                        }
+                    }
+
+                    // ── diagnostics: record stats ────────────────────────
+                    CB_STATS.callbacks.fetch_add(1, Ordering::Relaxed);
+                    CB_STATS.samples_total.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    CB_STATS.mix_frames.fetch_add(mix_count, Ordering::Relaxed);
+                    // PLAYED_SAMPLES consistency: old value must equal played_before
+                    let old = PLAYED_SAMPLES.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    if old != played_before {
+                        CB_STATS.played_mismatches.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // Store expected value for next callback's entry check
+                    CB_STATS.expected_next_played.store(old + data.len() as u64, Ordering::Relaxed);
+                }
+            },
+            |err| {
+                eprintln!("cpal output error: {}", err);
+                // A stream error usually means the output device went away
+                // (e.g. Bluetooth route change); rebuild on the next
+                // maintenance tick.
+                OUTPUT_RESTART_REQUESTED.store(true, Ordering::Relaxed);
+            },
+            None,
+        ) {
+            Ok(stream) => {
+                if stream.play().is_ok() {
+                    crate::AUDIO_STREAM.lock().unwrap().0 = Some(stream);
+                    eprintln!("cpal: output stream started (Default buffer, sample-driven)");
+                } else {
+                    eprintln!("cpal: play() failed");
+                }
+            }
+            Err(e) => eprintln!("cpal: build_output_stream failed: {}", e),
+        }
+    } else {
+        eprintln!("cpal: no output device");
+    }
+}
+
 /// Background task: periodically cleans up stale clients and refreshes the
 /// client-ID snapshot used by the audio callback.
 fn spawn_maintenance_task() {
@@ -653,6 +677,17 @@ fn spawn_maintenance_task() {
                     // Refresh client ID snapshot for the audio callback
                     let ids: Vec<u16> = CLIENT_BUFFERS.iter().map(|e| *e.key()).collect();
                     ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(ids));
+
+                    // Rebuild the output stream when a restart was requested
+                    // (device route change or cpal stream error). Double-check
+                    // the connection is still up right before rebuilding.
+                    if OUTPUT_RESTART_REQUESTED.load(Ordering::Relaxed)
+                        && STATE.lock().connected
+                    {
+                        eprintln!("[cpal] restarting output stream (device change / stream error)");
+                        restart_output_stream();
+                        OUTPUT_RESTART_REQUESTED.store(false, Ordering::Relaxed);
+                    }
                 }
                 _ = stats_tick.tick() => {
                     let cbs = CB_STATS.callbacks.swap(0, Ordering::Relaxed);
@@ -1100,6 +1135,29 @@ pub extern "C" fn ts_disconnect() -> *mut c_char {
         ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
     }
     to_c_str(r#"{"type":"disconnected","reason":"User disconnected"}"#.to_string())
+}
+
+/// Request the output stream to be rebuilt on the current default device.
+/// Only sets a flag — the maintenance task performs the rebuild within
+/// 500ms, which naturally coalesces multiple requests in the same window.
+#[no_mangle]
+pub extern "C" fn ts_restart_audio_output() {
+    if STATE.lock().connected {
+        OUTPUT_RESTART_REQUESTED.store(true, Ordering::Relaxed);
+        eprintln!("ts_restart_audio_output: restart requested");
+    } else {
+        eprintln!("ts_restart_audio_output: ignored (not connected)");
+    }
+}
+
+/// JNI entry used by KeepAliveService's AudioDeviceCallback when the output
+/// route changes (Bluetooth/wired/USB device added or removed).
+#[no_mangle]
+pub extern "system" fn Java_com_senlinjun_nek0_KeepAliveService_tsRestartAudioOutput(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    ts_restart_audio_output();
 }
 
 // ─── Poll / Getters ─────────────────────────────────────────────────

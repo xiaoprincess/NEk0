@@ -11,11 +11,16 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import io.flutter.embedding.engine.FlutterEngineCache
 import io.flutter.plugin.common.MethodChannel
@@ -24,6 +29,7 @@ class KeepAliveService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var mediaSession: MediaSession? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
 
     companion object {
         const val CHANNEL_ID = "teamspeak_keepalive"
@@ -38,6 +44,7 @@ class KeepAliveService : Service() {
         }
 
         @JvmStatic external fun tsDisconnect()
+        @JvmStatic external fun tsRestartAudioOutput()
 
         // Stored for NotificationActionReceiver to rebuild notification after actions
         @JvmField var lastTitle: String = "TeamSpeak"
@@ -163,8 +170,16 @@ class KeepAliveService : Service() {
                     .setOngoing(true)
                     .setContentIntent(pendingIntent)
                     .setStyle(mediaStyle)
-                    .addAction(muteIcon, muteActionLabel, mutePending)
-                    .addAction(R.drawable.ic_disconnect, disconnectLabel, discPending)
+                    .addAction(
+                        Notification.Action.Builder(muteIcon, muteActionLabel, mutePending).build()
+                    )
+                    .addAction(
+                        Notification.Action.Builder(
+                            R.drawable.ic_disconnect,
+                            disconnectLabel,
+                            discPending
+                        ).build()
+                    )
                     .build()
             } else {
                 @Suppress("DEPRECATION")
@@ -175,8 +190,16 @@ class KeepAliveService : Service() {
                     .setOngoing(true)
                     .setContentIntent(pendingIntent)
                     .setPriority(Notification.PRIORITY_LOW)
-                    .addAction(muteIcon, muteActionLabel, mutePending)
-                    .addAction(R.drawable.ic_disconnect, disconnectLabel, discPending)
+                    .addAction(
+                        Notification.Action.Builder(muteIcon, muteActionLabel, mutePending).build()
+                    )
+                    .addAction(
+                        Notification.Action.Builder(
+                            R.drawable.ic_disconnect,
+                            disconnectLabel,
+                            discPending
+                        ).build()
+                    )
                     .build()
             }
         }
@@ -190,6 +213,28 @@ class KeepAliveService : Service() {
             acquire()
         }
         cachedArtwork = loadAppIcon()
+        // Watch for output route changes (Bluetooth/wired/USB devices). When
+        // such a device is added or removed the Rust cpal stream is rebuilt on
+        // the new default output device; otherwise audio stays on the old route.
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioDeviceCallback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<AudioDeviceInfo>) {
+                if (addedDevices.any { isRelevantAudioDevice(it.type) }) {
+                    try { tsRestartAudioOutput() } catch (_: Exception) {}
+                }
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<AudioDeviceInfo>) {
+                if (removedDevices.any { isRelevantAudioDevice(it.type) }) {
+                    try { tsRestartAudioOutput() } catch (_: Exception) {}
+                }
+            }
+        }
+        try {
+            am.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        } catch (_: Exception) {
+            audioDeviceCallback = null
+        }
         // Register a media session in the playing state so the system treats
         // this app as a real media app. Without it, Android 14+ (especially
         // Android 15's 6h/24h mediaPlayback limit) stops the foreground
@@ -247,6 +292,16 @@ class KeepAliveService : Service() {
             }
             .build()
 
+    /// Whether the given device type can change the output route for the
+    /// cpal stream (headsets/headphones, Bluetooth audio, USB audio).
+    private fun isRelevantAudioDevice(type: Int): Boolean =
+        type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+            type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+            type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+            type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+            type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+            type == AudioDeviceInfo.TYPE_USB_DEVICE
+
     /// The launcher icon as a bitmap for the media card (no extra assets).
     /// Handles both plain bitmap icons and adaptive icons (API 26+).
     private fun loadAppIcon(): Bitmap? {
@@ -291,6 +346,13 @@ class KeepAliveService : Service() {
     }
 
     override fun onDestroy() {
+        audioDeviceCallback?.let {
+            try {
+                (getSystemService(Context.AUDIO_SERVICE) as AudioManager)
+                    .unregisterAudioDeviceCallback(it)
+            } catch (_: Exception) {}
+        }
+        audioDeviceCallback = null
         stopMediaSession()
         wakeLock?.let {
             if (it.isHeld) it.release()
