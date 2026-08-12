@@ -32,8 +32,6 @@ class ClientList extends StatelessWidget {
     }
 
     return ListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
       itemCount: channelClients.length,
       itemBuilder: (context, index) {
         final client = channelClients[index];
