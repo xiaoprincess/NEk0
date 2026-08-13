@@ -145,8 +145,11 @@ pub struct TsConnection {
     pub mic_gain: f32,
     // Audio receive state
     pub talking_clients: HashMap<u16, Instant>, // last audio timestamp per client (monotonic Instant)
-    /// Per-client volume in decibels (dB). Source of truth — NOT cleared on disconnect.
-    pub client_volumes: HashMap<u16, f32>,
+    /// Per-client volume in decibels (dB), keyed by the client's user UID.
+    /// Source of truth — NOT cleared on disconnect. The numeric client ID is
+    /// only a session-scoped handle; the UID is what survives reconnects and
+    /// identifies the same user across servers.
+    pub client_volumes: HashMap<String, f32>,
 }
 
 impl TsConnection {

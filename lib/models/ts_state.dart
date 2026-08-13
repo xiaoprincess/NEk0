@@ -177,6 +177,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     // Push persisted identity to Rust before connecting
     final prefs = await SharedPreferences.getInstance();
     _prefs = prefs; // cache for synchronous saves
+    _migrateLegacyVolumeKeys();
     final id = prefs.getString('client_identity');
     if (id != null) {
       debugPrint('TS: pushing identity to Rust');
@@ -244,6 +245,10 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
           state = state.copyWith(clients: clients);
         }
       } catch (_) {} // ignore parse errors during refresh
+      // Apply saved per-client volumes (UID-keyed) to any client whose volume
+      // differs from the saved value. Runs on every refresh, so it also covers
+      // late joiners and the brief window where a UID is not yet known.
+      _applySavedClientVolumes();
     } catch (e) {
       debugPrint('FFI poll error: $e');
     }
@@ -303,9 +308,6 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         // OEM guide dialog (server_screen._maybeShowOemGuide), so the user
         // knows why the system settings page opens.
         _saveIdentity();
-
-        // Restore saved per-client volumes from SharedPreferences
-        _restoreClientVolumes();
         break;
 
       case 'disconnected':
@@ -556,35 +558,47 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
       return c;
     }).toList();
     state = state.copyWith(clients: newClients);
-    // Persist per-client volume to SharedPreferences
-    _prefs?.setDouble('client_volume_$clientId', volumeDb);
+    // Persist per-client volume to SharedPreferences keyed by the user UID,
+    // so it survives reconnects and client ID reuse. Without a UID (client
+    // just joined and the roster hasn't refreshed yet) the change only
+    // applies for this session; _applySavedClientVolumes re-applies it once
+    // the UID shows up.
+    final client = newClients.where((c) => c.id == clientId).firstOrNull;
+    final uid = client?.uid;
+    if (uid != null && uid.isNotEmpty) {
+      _prefs?.setDouble('client_volume_uid_$uid', volumeDb);
+    }
   }
 
-  /// Restore per-client volumes from SharedPreferences and push to Rust.
-  Future<void> _restoreClientVolumes() async {
-    final prefs = await SharedPreferences.getInstance();
-    bool anyRestored = false;
-    for (final key in prefs.getKeys()) {
+  /// Removes legacy `client_volume_<clid>` keys persisted by older builds.
+  /// Volume persistence now uses `client_volume_uid_<uid>`.
+  void _migrateLegacyVolumeKeys() {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    for (final key in prefs.getKeys().toList()) {
       if (!key.startsWith('client_volume_')) continue;
-      final idStr = key.substring('client_volume_'.length);
-      final id = int.tryParse(idStr);
-      final db = prefs.getDouble(key);
-      if (id != null && db != null) {
-        TsNative.setClientVolume(id, db);
-        anyRestored = true;
+      final suffix = key.substring('client_volume_'.length);
+      if (int.tryParse(suffix) != null) {
+        prefs.remove(key);
       }
     }
-    if (anyRestored) {
-      // Re-fetch clients from Rust to get corrected volumes
-      try {
-        final clientsJson = TsNative.getClients();
-        final clients = (jsonDecode(clientsJson) as List)
-            .map((j) => TsClient.fromJson(j as Map<String, dynamic>))
-            .toList();
-        if (clients.isNotEmpty) {
-          state = state.copyWith(clients: clients);
-        }
-      } catch (_) {}
+  }
+
+  /// Applies saved per-client volumes (keyed by user UID) to every client in
+  /// the current roster whose saved volume differs from its current volume.
+  /// Idempotent, so it is safe to call on every poll cycle: it covers the
+  /// initial connect, clients that join later, and the window where a client's
+  /// UID isn't known yet (the volume is re-applied once the UID appears).
+  void _applySavedClientVolumes() {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    for (final client in state.clients) {
+      final uid = client.uid;
+      if (uid == null || uid.isEmpty) continue;
+      final saved = prefs.getDouble('client_volume_uid_$uid');
+      if (saved != null && (saved - client.volume).abs() > 0.001) {
+        setClientVolume(client.id, saved);
+      }
     }
   }
 }

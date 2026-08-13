@@ -87,19 +87,22 @@ fn refresh_from_book(book: &tsclientlib::data::Connection) -> (Vec<TsChannel>, V
                 volume: {
                     let cid = c.id.0 as u16;
                     let state = STATE.lock();
-                    // Primary source: persisted dB value
-                    if let Some(&db) = state.client_volumes.get(&cid) {
-                        db
-                    } else {
+                    // Primary source: persisted dB value keyed by the user UID
+                    let persisted = c
+                        .uid
+                        .as_ref()
+                        .and_then(|uid| state.client_volumes.get(&uid.to_string()).copied());
+                    drop(state);
+                    persisted.unwrap_or_else(|| {
                         // Fallback: convert linear gain from jitter buffer → dB
-                        drop(state);
-                        crate::CLIENT_BUFFERS.get(&cid)
+                        crate::CLIENT_BUFFERS
+                            .get(&cid)
                             .map(|b| {
                                 let gain = f32::from_bits(b.volume.load(Ordering::Relaxed));
                                 20.0 * gain.max(1e-10).log10()
                             })
                             .unwrap_or(0.0) // default: 0 dB = unity gain
-                    }
+                    })
                 },
             }
         })
@@ -392,8 +395,17 @@ fn decode_to_client_buffer(audio_buf: InAudioBuf) {
     // Get or create per-client jitter buffer — DashMap, no STATE lock
     let buf = CLIENT_BUFFERS.entry(from_id).or_insert_with(|| {
         let b = crate::ClientJitterBuffer::new();
-        // Inherit persisted volume when creating a new jitter buffer
-        if let Some(&db) = STATE.lock().client_volumes.get(&from_id) {
+        // Inherit persisted volume when creating a new jitter buffer: resolve
+        // the client's UID from the roster, then look up the UID-keyed table.
+        let state = STATE.lock();
+        let persisted_db = state
+            .clients
+            .iter()
+            .find(|c| c.id as u16 == from_id)
+            .and_then(|c| c.uid.as_ref())
+            .and_then(|uid| state.client_volumes.get(uid.as_str()).copied());
+        drop(state);
+        if let Some(db) = persisted_db {
             let gain = 10.0_f32.powf(db / 20.0);
             b.volume.store(f32::to_bits(gain), Ordering::Release);
         }
@@ -1196,12 +1208,19 @@ pub extern "C" fn ts_get_clients() -> *mut c_char {
     for c in &mut state.clients {
         c.is_talking = talking.contains(&(c.id as u16));
     }
-    // Refresh per-client volumes from persistent store before serializing
-    // Snapshot to avoid borrow conflict with mutable clients iteration
-    let volume_snapshot: Vec<(u16, f32)> = state.client_volumes.iter().map(|(&k, &v)| (k, v)).collect();
+    // Refresh per-client volumes from the UID-keyed persistent store before
+    // serializing. Snapshot the map first to avoid a borrow conflict with the
+    // mutable clients iteration (the MutexGuard deref can't split field borrows).
+    let volume_snapshot: Vec<(String, f32)> = state
+        .client_volumes
+        .iter()
+        .map(|(k, &v)| (k.clone(), v))
+        .collect();
     for c in &mut state.clients {
-        if let Some(&(_id, db)) = volume_snapshot.iter().find(|(id, _)| *id == c.id as u16) {
-            c.volume = db;
+        if let Some(uid) = &c.uid {
+            if let Some((_uid, db)) = volume_snapshot.iter().find(|(u, _)| u == uid) {
+                c.volume = *db;
+            }
         }
     }
     to_c_str(serde_json::to_string(&state.clients).unwrap_or_else(|_| "[]".into()))
@@ -1332,13 +1351,28 @@ pub extern "C" fn ts_set_mic_gain(gain: f32) {
 
 /// Set per-client volume in decibels.  Range -20 to +20 dB.
 /// Converted to linear gain internally: gain = 10^(dB/20).
+/// The numeric `client_id` is a session-scoped handle: the value is persisted
+/// under the client's user UID so it survives reconnects and client ID reuse.
+/// If the client's UID is not known yet (e.g. brand-new client within the
+/// roster refresh window), the volume is only applied to the live buffer and
+/// not persisted.
 #[no_mangle]
 pub extern "C" fn ts_set_client_volume(client_id: u16, volume_db: f32) {
     let vol_db = volume_db.clamp(-20.0, 20.0);
     let gain = 10.0_f32.powf(vol_db / 20.0);
 
-    // Persist dB to STATE — source of truth, survives disconnect
-    STATE.lock().client_volumes.insert(client_id, vol_db);
+    // Persist dB to STATE keyed by the user UID — source of truth, survives disconnect
+    let mut state = STATE.lock();
+    let uid = state
+        .clients
+        .iter()
+        .find(|c| c.id as u16 == client_id)
+        .and_then(|c| c.uid.as_ref())
+        .cloned();
+    if let Some(uid) = uid {
+        state.client_volumes.insert(uid, vol_db);
+    }
+    drop(state);
 
     // Also update the live jitter buffer if it exists
     if let Some(buf) = CLIENT_BUFFERS.get(&client_id) {
