@@ -296,7 +296,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               dense: true,
                               activeColor: Colors.blue,
                               title: Text(
-                                source.label,
+                                source == OtaSource.auto
+                                    ? AppLocalizations.of(
+                                        context,
+                                      ).updateSourceAuto
+                                    : source.label,
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 14,

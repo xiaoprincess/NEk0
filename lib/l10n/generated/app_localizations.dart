@@ -356,6 +356,12 @@ abstract class AppLocalizations {
   /// **'Update source'**
   String get updateSource;
 
+  /// No description provided for @updateSourceAuto.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto'**
+  String get updateSourceAuto;
+
   /// No description provided for @checkNow.
   ///
   /// In en, this message translates to:

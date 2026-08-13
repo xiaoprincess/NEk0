@@ -146,6 +146,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get updateSource => 'Update source';
 
   @override
+  String get updateSourceAuto => 'Auto';
+
+  @override
   String get checkNow => 'Check now';
 
   @override

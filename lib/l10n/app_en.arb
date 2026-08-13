@@ -51,6 +51,7 @@
   "updateSection": "Update",
   "checkForUpdates": "Check for updates",
   "updateSource": "Update source",
+  "updateSourceAuto": "Auto",
   "checkNow": "Check now",
   "checkingForUpdates": "Checking for updates\u2026",
   "noUpdateAvailable": "No update available",

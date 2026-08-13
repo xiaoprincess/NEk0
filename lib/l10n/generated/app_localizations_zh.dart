@@ -141,6 +141,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get updateSource => '更新源';
 
   @override
+  String get updateSourceAuto => '自动';
+
+  @override
   String get checkNow => '立即检查';
 
   @override

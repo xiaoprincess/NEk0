@@ -21,7 +21,7 @@ flutter run / flutter build apk
 A missing `libtsclient.so` does NOT fail the Gradle build — it crashes at runtime in
 `lib/services/ts_ffi.dart` (`DynamicLibrary.open('libtsclient.so')`). CI
 (`.github/workflows/ci.yml`) runs only on tag pushes: `cargo check` → `pre_build.py` →
-`dart format` + `flutter analyze` → `flutter build apk` (release artifacts).
+`flutter gen-l10n` + `dart format` + `flutter analyze` → `flutter build apk` (release artifacts).
 
 ## Architecture
 

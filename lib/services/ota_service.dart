@@ -12,19 +12,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Where to look for releases. Both point at the same repo (senlinjun/Nek0);
 /// the release tag format is vx.y.z.
 enum OtaSource {
+  auto('Auto'),
   github(
     'GitHub',
-    'https://api.github.com/repos/senlinjun/Nek0/releases/latest',
+    apiUrl: 'https://api.github.com/repos/senlinjun/Nek0/releases/latest',
   ),
   gitee(
     'Gitee',
-    'https://gitee.com/api/v5/repos/senlinjun/Nek0/releases/latest',
+    apiUrl: 'https://gitee.com/api/v5/repos/senlinjun/Nek0/releases/latest',
   );
 
-  const OtaSource(this.label, this.apiUrl);
+  const OtaSource(this.label, {this.apiUrl});
 
   final String label;
-  final String apiUrl;
+  final String? apiUrl;
 }
 
 /// A newer release found by [OtaService.checkForUpdate].
@@ -39,17 +40,29 @@ class OtaUpdateInfo {
 /// Persistent OTA preferences (SharedPreferences).
 class OtaSettings {
   bool enabled = true;
-  OtaSource source = OtaSource.github;
+  OtaSource source = OtaSource.auto;
+
+  /// Last source selected by an automatic probe ('github'/'gitee', or null
+  /// when auto mode never succeeded yet).
+  OtaSource? lastAutoSource;
 
   static const _kEnabled = 'ota_enabled';
   static const _kSource = 'ota_source';
+  static const _kLastAutoSource = 'ota_last_auto_source';
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     enabled = prefs.getBool(_kEnabled) ?? true;
-    source = prefs.getString(_kSource) == 'gitee'
-        ? OtaSource.gitee
-        : OtaSource.github;
+    source = switch (prefs.getString(_kSource)) {
+      'gitee' => OtaSource.gitee,
+      'github' => OtaSource.github,
+      _ => OtaSource.auto,
+    };
+    lastAutoSource = switch (prefs.getString(_kLastAutoSource)) {
+      'gitee' => OtaSource.gitee,
+      'github' => OtaSource.github,
+      _ => null,
+    };
   }
 
   Future<void> setEnabled(bool value) async {
@@ -61,8 +74,18 @@ class OtaSettings {
   Future<void> setSource(OtaSource value) async {
     source = value;
     final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kSource, switch (value) {
+      OtaSource.auto => 'auto',
+      OtaSource.gitee => 'gitee',
+      OtaSource.github => 'github',
+    });
+  }
+
+  Future<void> setLastAutoSource(OtaSource value) async {
+    lastAutoSource = value;
+    final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-      _kSource,
+      _kLastAutoSource,
       value == OtaSource.gitee ? 'gitee' : 'github',
     );
   }
@@ -71,15 +94,70 @@ class OtaSettings {
 class OtaService {
   static final _versionRe = RegExp(r'^v?(\d+)\.(\d+)\.(\d+)$');
 
-  /// Fetch the latest release from [source] and return update info if it is
-  /// newer than the installed version. Returns null when there is no update
-  /// (or on any failure — callers should stay quiet).
+  /// Check for an update. With [OtaSource.auto] both GitHub and Gitee are
+  /// probed concurrently (first successful response wins, with a preference
+  /// for the last automatically selected source when both succeed) and the
+  /// winner is remembered for the next automatic check. Manual sources behave
+  /// exactly as before. Returns null when there is no update (or on any
+  /// failure — callers should stay quiet).
   static Future<OtaUpdateInfo?> checkForUpdate(OtaSource source) async {
+    final settings = OtaSettings();
+    await settings.load();
+    if (source != OtaSource.auto) {
+      return _fetchUpdateInfo(source);
+    }
+
+    final infoBySource = <OtaSource, OtaUpdateInfo?>{};
+    final completed = <OtaSource>[];
+    Future<void> probe(OtaSource candidate) async {
+      final info = await _fetchUpdateInfo(candidate);
+      infoBySource[candidate] = info;
+      if (info != null) completed.add(candidate);
+    }
+
+    await Future.wait([probe(OtaSource.github), probe(OtaSource.gitee)]);
+
+    final githubInfo = infoBySource[OtaSource.github];
+    final giteeInfo = infoBySource[OtaSource.gitee];
+    OtaUpdateInfo? winnerInfo;
+    OtaSource? winner;
+    if (githubInfo != null && giteeInfo != null) {
+      // Both reachable: prefer the source that worked last time, otherwise
+      // the one that responded first.
+      if (settings.lastAutoSource == OtaSource.gitee) {
+        winner = OtaSource.gitee;
+      } else if (settings.lastAutoSource == OtaSource.github) {
+        winner = OtaSource.github;
+      } else {
+        winner = completed.isNotEmpty ? completed.first : OtaSource.github;
+      }
+      winnerInfo = winner == OtaSource.gitee ? giteeInfo : githubInfo;
+    } else if (githubInfo != null) {
+      winner = OtaSource.github;
+      winnerInfo = githubInfo;
+    } else if (giteeInfo != null) {
+      winner = OtaSource.gitee;
+      winnerInfo = giteeInfo;
+    }
+
+    if (winner != null) {
+      await settings.setLastAutoSource(winner);
+      return winnerInfo;
+    }
+    return null;
+  }
+
+  /// Fetch the latest release from a concrete (non-auto) [source] and return
+  /// update info if it is newer than the installed version. Returns null when
+  /// there is no update (or on any failure).
+  static Future<OtaUpdateInfo?> _fetchUpdateInfo(OtaSource source) async {
     try {
+      final apiUrl = source.apiUrl;
+      if (apiUrl == null) return null;
       final info = await PackageInfo.fromPlatform();
       final current = _parseVersion(info.version);
       final resp = await http
-          .get(Uri.parse(source.apiUrl), headers: {'User-Agent': 'NEk0'})
+          .get(Uri.parse(apiUrl), headers: {'User-Agent': 'NEk0'})
           .timeout(const Duration(seconds: 15));
       if (resp.statusCode != 200) return null;
       final json = jsonDecode(resp.body) as Map<String, dynamic>;

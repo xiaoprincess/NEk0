@@ -46,6 +46,7 @@
   "updateSection": "更新",
   "checkForUpdates": "检查更新",
   "updateSource": "更新源",
+  "updateSourceAuto": "自动",
   "checkNow": "立即检查",
   "checkingForUpdates": "正在检查更新…",
   "noUpdateAvailable": "暂无可用更新",
