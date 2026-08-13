@@ -300,6 +300,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
           text: _currentChannelName,
           mic: false,
           inputMuted: state.inputMuted,
+          fullMuted: state.inputMuted && state.outputMuted,
           muteLabel: _notifMuteLabel,
           unmuteLabel: _notifUnmuteLabel,
           disconnectLabel: _notifDisconnectLabel,
@@ -460,6 +461,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
       text: text,
       mic: hasMic,
       inputMuted: state.inputMuted,
+      fullMuted: state.inputMuted && state.outputMuted,
       muteLabel: _notifMuteLabel,
       unmuteLabel: _notifUnmuteLabel,
       disconnectLabel: _notifDisconnectLabel,
@@ -513,6 +515,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     state = state.copyWith(inputMuted: newMuted);
     TsNative.setMuted(input: newMuted, output: state.outputMuted);
     _updateMicState();
+    _refreshNotification();
   }
 
   /// Full mute: input + output muted and mic capture stopped. Idempotent —
@@ -533,6 +536,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     final newMuted = !state.outputMuted;
     state = state.copyWith(outputMuted: newMuted);
     TsNative.setMuted(input: state.inputMuted, output: newMuted);
+    _refreshNotification();
   }
 
   void setVadThreshold(double threshold) {

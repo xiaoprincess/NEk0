@@ -50,6 +50,7 @@ class KeepAliveService : Service() {
         @JvmField var lastTitle: String = "TeamSpeak"
         @JvmField var lastText: String = "Connected"
         @JvmField var lastInputMuted: Boolean = false
+        @JvmField var lastFullMuted: Boolean = false
         @JvmField var lastMuteLabel: String = "Mute"
         @JvmField var lastUnmuteLabel: String = "Unmute"
         @JvmField var lastDisconnectLabel: String = "Disconnect"
@@ -60,6 +61,7 @@ class KeepAliveService : Service() {
             text: String,
             mic: Boolean = false,
             inputMuted: Boolean = false,
+            fullMuted: Boolean = false,
             muteLabel: String = "Mute",
             unmuteLabel: String = "Unmute",
             disconnectLabel: String = "Disconnect",
@@ -67,6 +69,7 @@ class KeepAliveService : Service() {
             lastTitle = title
             lastText = text
             lastInputMuted = inputMuted
+            lastFullMuted = fullMuted
             lastMuteLabel = muteLabel
             lastUnmuteLabel = unmuteLabel
             lastDisconnectLabel = disconnectLabel
@@ -75,6 +78,7 @@ class KeepAliveService : Service() {
                 putExtra("text", text)
                 putExtra("mic", mic)
                 putExtra("input_muted", inputMuted)
+                putExtra("full_muted", fullMuted)
                 putExtra("mute_label", muteLabel)
                 putExtra("unmute_label", unmuteLabel)
                 putExtra("disconnect_label", disconnectLabel)
@@ -96,6 +100,7 @@ class KeepAliveService : Service() {
             text: String,
             mic: Boolean = false,
             inputMuted: Boolean = false,
+            fullMuted: Boolean = false,
             muteLabel: String = "Mute",
             unmuteLabel: String = "Unmute",
             disconnectLabel: String = "Disconnect",
@@ -103,6 +108,7 @@ class KeepAliveService : Service() {
             lastTitle = title
             lastText = text
             lastInputMuted = inputMuted
+            lastFullMuted = fullMuted
             lastMuteLabel = muteLabel
             lastUnmuteLabel = unmuteLabel
             lastDisconnectLabel = disconnectLabel
@@ -112,6 +118,7 @@ class KeepAliveService : Service() {
                 putExtra("text", text)
                 putExtra("mic", mic)
                 putExtra("input_muted", inputMuted)
+                putExtra("full_muted", fullMuted)
                 putExtra("mute_label", muteLabel)
                 putExtra("unmute_label", unmuteLabel)
                 putExtra("disconnect_label", disconnectLabel)
@@ -243,22 +250,21 @@ class KeepAliveService : Service() {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
                     // Media card "play" = restore: unmute input+output, mic on.
+                    mediaSession?.setPlaybackState(
+                        buildPlaybackState(PlaybackState.STATE_PLAYING)
+                    )
                     invokeDart("set_full_mute", mapOf("muted" to false))
                 }
 
                 override fun onPause() {
                     // Media card "pause" = full mute: input+output muted, mic off.
+                    mediaSession?.setPlaybackState(
+                        buildPlaybackState(PlaybackState.STATE_PAUSED)
+                    )
                     invokeDart("set_full_mute", mapOf("muted" to true))
                 }
             })
-            setPlaybackState(
-                PlaybackState.Builder()
-                    .setState(PlaybackState.STATE_PLAYING, 0L, 1f)
-                    // Keep the play/pause action so the media card shows the
-                    // button that drives the full-mute toggle via onPlay/onPause.
-                    .setActions(PlaybackState.ACTION_PLAY_PAUSE)
-                    .build()
-            )
+            setPlaybackState(buildPlaybackState(PlaybackState.STATE_PLAYING))
             setMetadata(buildMetadata(lastTitle, lastText))
             setActive(true)
         }
@@ -290,6 +296,20 @@ class KeepAliveService : Service() {
                     putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, it)
                 }
             }
+            .build()
+
+    /// Builds the playback state for the media card. Always exposes the
+    /// play/pause action so the card button drives the full-mute toggle via
+    /// onPlay/onPause; the state itself tracks whether the session is fully
+    /// muted (PAUSED) or listening (PLAYING).
+    private fun buildPlaybackState(state: Int): PlaybackState =
+        PlaybackState.Builder()
+            .setState(
+                state,
+                0L,
+                if (state == PlaybackState.STATE_PLAYING) 1f else 0f
+            )
+            .setActions(PlaybackState.ACTION_PLAY_PAUSE)
             .build()
 
     /// Whether the given device type can change the output route for the
@@ -382,6 +402,8 @@ class KeepAliveService : Service() {
         val title = intent?.getStringExtra("title") ?: "TeamSpeak"
         val text = intent?.getStringExtra("text") ?: "Connected"
         val inputMuted = intent?.getBooleanExtra("input_muted", false) ?: false
+        val fullMuted = intent?.getBooleanExtra("full_muted", lastFullMuted)
+            ?: lastFullMuted
         val muteLabel = intent?.getStringExtra("mute_label") ?: lastMuteLabel
         val unmuteLabel = intent?.getStringExtra("unmute_label") ?: lastUnmuteLabel
         val disconnectLabel = intent?.getStringExtra("disconnect_label") ?: lastDisconnectLabel
@@ -390,14 +412,16 @@ class KeepAliveService : Service() {
             muteLabel, unmuteLabel, disconnectLabel,
         )
         val hasMic = intent?.getBooleanExtra("mic", false) ?: false
-        // Keep the session "playing" and metadata in sync on every update.
+        // Keep the session state and metadata in sync on every update. The
+        // card shows pause/play to match the full-mute state: fully muted is
+        // PAUSED (so the button is "play"), otherwise PLAYING.
         mediaSession?.let {
             it.setMetadata(buildMetadata(title, text))
             it.setPlaybackState(
-                PlaybackState.Builder()
-                    .setState(PlaybackState.STATE_PLAYING, 0L, 1f)
-                    .setActions(PlaybackState.ACTION_PLAY_PAUSE)
-                    .build()
+                buildPlaybackState(
+                    if (fullMuted) PlaybackState.STATE_PAUSED
+                    else PlaybackState.STATE_PLAYING
+                )
             )
             it.setActive(true)
         }

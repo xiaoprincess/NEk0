@@ -50,11 +50,12 @@ class MainActivity : FlutterActivity() {
                         val text = call.argument<String>("text") ?: "Connected"
                         val mic = call.argument<Boolean>("mic") ?: false
                         val inputMuted = call.argument<Boolean>("input_muted") ?: false
+                        val fullMuted = call.argument<Boolean>("full_muted") ?: false
                         val muteLabel = call.argument<String>("mute_label") ?: "Mute"
                         val unmuteLabel = call.argument<String>("unmute_label") ?: "Unmute"
                         val disconnectLabel = call.argument<String>("disconnect_label") ?: "Disconnect"
                         KeepAliveService.start(
-                            this, title, text, mic, inputMuted,
+                            this, title, text, mic, inputMuted, fullMuted,
                             muteLabel, unmuteLabel, disconnectLabel,
                         )
                         result.success(true)
@@ -68,11 +69,12 @@ class MainActivity : FlutterActivity() {
                         val text = call.argument<String>("text") ?: "Connected"
                         val mic = call.argument<Boolean>("mic") ?: false
                         val inputMuted = call.argument<Boolean>("input_muted") ?: false
+                        val fullMuted = call.argument<Boolean>("full_muted") ?: false
                         val muteLabel = call.argument<String>("mute_label") ?: "Mute"
                         val unmuteLabel = call.argument<String>("unmute_label") ?: "Unmute"
                         val disconnectLabel = call.argument<String>("disconnect_label") ?: "Disconnect"
                         KeepAliveService.update(
-                            this, title, text, mic, inputMuted,
+                            this, title, text, mic, inputMuted, fullMuted,
                             muteLabel, unmuteLabel, disconnectLabel,
                         )
                         result.success(true)
