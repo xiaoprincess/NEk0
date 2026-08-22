@@ -353,7 +353,8 @@ fn unwrap_seq(seq: u16, base: u16) -> u32 {
 /// No STATE lock held — decoders and buffers are in DashMaps.
 fn decode_to_client_buffer(audio_buf: InAudioBuf) {
     const FRAME: usize = 960;
-    const TARGET_DELAY: u64 = 2; // 40ms jitter buffer
+    const TARGET_DELAY: u64 = 6; // 120ms jitter buffer (absorbs network blips)
+    const REBASE_LEAD: u64 = 4; // reader ≥4 frames (80ms) ahead before realigning
 
     // Extract data from the self_cell-wrapped buffer
     let audio = audio_buf.data();
@@ -423,15 +424,20 @@ fn decode_to_client_buffer(audio_buf: InAudioBuf) {
         b
     });
 
-    // Init baseline with compare_exchange (prevents race when two packets arrive simultaneously)
+    // Init baseline with compare_exchange on the packed base_pair (prevents
+    // races when two packets arrive simultaneously).
     let tmp_global = unwrap_seq(seq_u16, 0);
-    if buf.base_seq.load(Ordering::Relaxed) == 0 {
-        if buf.base_seq.compare_exchange(0, tmp_global, Ordering::Release, Ordering::Relaxed).is_ok() {
-            let now_slot = PLAYED_SAMPLES.load(Ordering::Relaxed) / crate::FRAME_SIZE;
-            buf.base_slot.store(now_slot + TARGET_DELAY, Ordering::Release);
+    if buf.base_pair.load(Ordering::Relaxed) == 0 {
+        let now_slot = PLAYED_SAMPLES.load(Ordering::Relaxed) / crate::FRAME_SIZE;
+        let init_pair = ((tmp_global as u64) << 32) | (now_slot + TARGET_DELAY);
+        if buf.base_pair.compare_exchange(0, init_pair, Ordering::Release, Ordering::Relaxed).is_ok() {
+            // Baseline established with this packet.
         }
     }
-    let mut base_seq = buf.base_seq.load(Ordering::Relaxed);
+    // One atomic load: base_seq and base_slot always come from the same mapping.
+    let base_pair = buf.base_pair.load(Ordering::Acquire);
+    let mut base_seq = (base_pair >> 32) as u32;
+    let base_slot = base_pair & 0xFFFF_FFFF;
     let global_seq = unwrap_seq(seq_u16, base_seq as u16);
     let write_seq_before = buf.write_seq.load(Ordering::Relaxed);
 
@@ -446,36 +452,65 @@ fn decode_to_client_buffer(audio_buf: InAudioBuf) {
         }
     }
 
-    // If the reader has overrun during a silence gap, rebase to realign.
-    // PLAYED_SAMPLES keeps advancing during silence but TS sequence numbers
-    // do not — so even a 1-frame reader lead is permanent (both advance at
-    // the same rate and the gap never closes).
+    // Realign only when the reader has genuinely overtaken the writer (drained
+    // silence gap, big network blip). Deliberately NOT triggered by a single
+    // late/reordered frame (behind < REBASE_LEAD): those are written late and
+    // quietly skipped instead of wiping the whole window on every wobble —
+    // wiping was what made stutter persist after network fluctuation. `behind`
+    // wraps to a huge value when the writer is actually ahead, which the
+    // `< 4096` bound (≈82s) excludes.
     {
         let current_slot = PLAYED_SAMPLES.load(Ordering::Relaxed) / crate::FRAME_SIZE;
-        let base_slot_before = buf.base_slot.load(Ordering::Relaxed);
         let reader_expected = current_slot
-            .wrapping_sub(base_slot_before)
+            .wrapping_sub(base_slot)
             .wrapping_add(base_seq as u64);
-        // Rebase when: not init, frame is forward (not delayed/reordered),
-        // and reader has already passed this frame's play position.
+        let behind = reader_expected.wrapping_sub(global_seq as u64);
         if write_seq_before != 0
             && global_seq > write_seq_before
-            && (global_seq as u64) < reader_expected
+            && behind >= REBASE_LEAD
+            && behind < 4096
         {
-            buf.base_seq.store(global_seq, Ordering::Release);
-            buf.base_slot.store(current_slot + TARGET_DELAY, Ordering::Release);
-            // Clear stale slots from old mapping to prevent misreads
-            for slot in &buf.slots {
+            let new_base_seq = global_seq;
+            let new_base_slot = current_slot + TARGET_DELAY;
+            // Non-destructive rebase: re-home frames that are still playable
+            // under the new mapping instead of wiping the whole window.
+            // Old slot i held the newest frame with seq ≡ old_base + i
+            // (mod JITTER_SLOTS); place it at its residue under new_base.
+            let mut kept = 0u32;
+            let mut freed = 0u32;
+            for (i, slot) in buf.slots.iter().enumerate() {
                 if let Some(frame) = slot.swap(None) {
-                    buf.frame_pool.push(frame);
+                    let dist = base_seq
+                        .wrapping_add(i as u32)
+                        .wrapping_sub(new_base_seq) as usize;
+                    if dist < crate::JITTER_SLOTS {
+                        // Still inside the new window — republish at mapped slot.
+                        if let Some(old) = buf.slots[dist].swap(None) {
+                            buf.frame_pool.push(old);
+                        }
+                        buf.slots[dist].swap(Some(frame));
+                        kept += 1;
+                    } else {
+                        // seq now before the new base — truly stale.
+                        buf.frame_pool.push(frame);
+                        freed += 1;
+                    }
                 }
             }
-            base_seq = global_seq; // local sync after rebase
+            buf.base_pair.store(
+                ((new_base_seq as u64) << 32) | new_base_slot,
+                Ordering::Release,
+            );
+            eprintln!(
+                "[jbuf] rebase client={} old_base={} new_base={} behind={} kept={} freed={}",
+                from_id, base_seq, new_base_seq, behind, kept, freed
+            );
+            base_seq = new_base_seq; // local sync after rebase (base_slot unused below)
         }
     }
 
     // Write frame to the lock-free jitter buffer
-    let slot_idx = (global_seq.wrapping_sub(base_seq)) as usize % 32;
+    let slot_idx = (global_seq.wrapping_sub(base_seq)) as usize % crate::JITTER_SLOTS;
 
     // Evict old frame if overwriting a slot
     if let Some(old) = buf.slots[slot_idx].swap(None) {
@@ -616,15 +651,18 @@ fn restart_output_stream() {
                             let client_ids = ACTIVE_CLIENT_IDS.load();
                             for &client_id in client_ids.iter() {
                                 if let Some(buf) = CLIENT_BUFFERS.get(&client_id) {
-                                    let base_seq = buf.base_seq.load(Ordering::Relaxed);
+                                    // One atomic load: base_seq/base_slot are
+                                    // always a consistent pair.
+                                    let base_pair = buf.base_pair.load(Ordering::Acquire);
+                                    let base_seq = (base_pair >> 32) as u32;
                                     if base_seq == 0 { continue; }
-                                    let base_slot = buf.base_slot.load(Ordering::Relaxed);
+                                    let base_slot = base_pair & 0xFFFF_FFFF;
                                     let expected_seq = slot.wrapping_sub(base_slot)
                                         .wrapping_add(base_seq as u64);
                                     let write_seq = buf.write_seq.load(Ordering::Acquire) as u64;
                                     if write_seq >= expected_seq {
                                         let idx = (expected_seq.wrapping_sub(base_seq as u64))
-                                            as usize % 32;
+                                            as usize % crate::JITTER_SLOTS;
                                         if let Some(frame) = buf.slots[idx].swap(None) {
                                             let vol = f32::from_bits(
                                                 buf.volume.load(Ordering::Relaxed));

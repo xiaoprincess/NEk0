@@ -91,17 +91,25 @@ pub struct TsClient {
 
 // ─── Per-client lock-free jitter buffer ──────────────────────────────
 
-/// Lock-free per-client jitter buffer with 32 slots (640ms window at 20ms/frame).
+/// Number of ring slots per client jitter buffer. 64 slots = 1.28s window at
+/// 20ms/frame. Keep it a power of two: ring index is `seq % JITTER_SLOTS`.
+pub const JITTER_SLOTS: usize = 64;
+
+/// Lock-free per-client jitter buffer with 64 slots (1.28s window at 20ms/frame).
 /// Writer: decoding thread (one per client). Reader: cpal audio callback.
 pub struct ClientJitterBuffer {
     /// Circular array of frame slots. AtomicCell swap provides lock-free read/write.
-    pub slots: [AtomicCell<Option<Vec<i16>>>; 32],
+    pub slots: [AtomicCell<Option<Vec<i16>>>; JITTER_SLOTS],
     /// Sequence number of the most recently written frame (unwrapped to u32 space).
     pub write_seq: AtomicU32,
-    /// First sequence number seen, unwrapped to u32 space. Set once with compare_exchange.
-    pub base_seq: AtomicU32,
-    /// Global play_slot at which base_seq should be played (base_seq → base_slot mapping).
-    pub base_slot: AtomicU64,
+    /// Packed mapping base: `(base_seq as u64) << 32 | base_slot`. Read and
+    /// written as ONE atomic so the reader never observes a mismatched pair
+    /// (e.g. a new base_seq with the previous base_slot) during a rebase.
+    /// - base_seq (high 32 bits): first sequence number of the current mapping.
+    /// - base_slot (low 32 bits): global play slot at which base_seq plays.
+    ///   Play slots advance at 50/s; 2^32 slots ≈ 55 years, never exceeded
+    ///   within one buffer lifetime (buffers are cleared on stream restart).
+    pub base_pair: AtomicU64,
     /// Monotonic timestamp of last received packet. None = never received. Used for cleanup.
     pub last_packet: AtomicCell<Option<Instant>>,
     /// Lock-free frame pool — callback pushes used frames, decoder pops them. No contention.
@@ -115,10 +123,9 @@ impl ClientJitterBuffer {
         const NONE: AtomicCell<Option<Vec<i16>>> =
             AtomicCell::new(None);
         Self {
-            slots: [NONE; 32],
+            slots: [NONE; JITTER_SLOTS],
             write_seq: AtomicU32::new(0),
-            base_seq: AtomicU32::new(0),
-            base_slot: AtomicU64::new(0),
+            base_pair: AtomicU64::new(0),
             last_packet: AtomicCell::new(None),
             frame_pool: SegQueue::new(),
             volume: AtomicU32::new(f32::to_bits(1.0)),
