@@ -4,8 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'l10n/generated/app_localizations.dart';
 import 'models/app_locale.dart';
 import 'screens/home_screen.dart';
+import 'services/sfx_service.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Restore custom channel-event sounds persisted in the private documents
+  // directory (built-in samples remain active for kinds without a file).
+  await SfxService.init();
   runApp(const ProviderScope(child: TeamSpeakApp()));
 }
 

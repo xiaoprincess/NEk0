@@ -2,13 +2,14 @@ use crate::{
     Command, TsChannel, TsClient, TsEvent,
     AUDIO_DECODERS, AUDIO_DECODERS_STEREO, AUDIO_STREAM, CB_STATS, CLIENT_BUFFERS,
     COMMAND_TX, FRAME_SIZE, IDENTITY_STASH, PLAYED_SAMPLES, ACTIVE_CLIENT_IDS,
-    RUNTIME, STATE, SWIPE_DISCONNECT, OUTPUT_RESTART_REQUESTED,
+    RUNTIME, SFX_ARMED, SFX_DEFERRED_TEARDOWN, SFX_QUEUE, SFX_SUPPRESS_DISCONNECT,
+    STATE, SWIPE_DISCONNECT, OUTPUT_RESTART_REQUESTED,
 };
 
 use futures::prelude::*;
 use opus_rs::OpusDecoder;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering;
@@ -218,6 +219,13 @@ async fn do_connect(
     }
 
     let mut con = opts.connect().map_err(|e| format!("{}", e))?;
+    // Disarm channel-event SFX until the initial roster sync is fully
+    // consumed; the first BookEvents batch processed by the event loop
+    // re-arms it (see handle_control_item). Also reset the disconnect
+    // suppression and deferred-teardown flags from a previous connection.
+    SFX_ARMED.store(false, Ordering::Relaxed);
+    SFX_SUPPRESS_DISCONNECT.store(false, Ordering::Relaxed);
+    SFX_DEFERRED_TEARDOWN.store(false, Ordering::Relaxed);
 
     let mut ok = false;
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -291,6 +299,9 @@ async fn do_connect(
     // --- Push-mode audio output (cpal) with sample-driven mixing ---
     spawn_maintenance_task();
     restart_output_stream();
+    // Queue the connected sound after the stream restart — the restart
+    // drains the SFX queue, so pushing before it would lose the request.
+    push_sfx(SFX_CONNECTED, "connected");
 
     RUNTIME.spawn(async move {
         let con = crate::CONNECTION_STASH
@@ -482,6 +493,59 @@ fn decode_to_client_buffer(audio_buf: InAudioBuf) {
     STATE.lock().talking_clients.insert(from_id, Instant::now());
 }
 
+// ─── Channel-event SFX playback ─────────────────────────────────────
+
+/// SFX kind ids, mirroring the order of `SFX_BUILTIN` in lib.rs. Values are
+/// shared with Dart (`lib/services/sfx_service.dart`) and persisted custom
+/// samples are stored per kind — do not renumber.
+const SFX_CHANNEL_SWITCHED: u8 = 1;
+const SFX_NEUTRAL_TO_CURRENT: u8 = 2;
+const SFX_NEUTRAL_AWAY_FROM_CURRENT: u8 = 3;
+const SFX_YOU_WERE_MOVED: u8 = 4;
+const SFX_YOU_KICKED_CHANNEL: u8 = 5;
+const SFX_YOU_KICKED_SERVER: u8 = 6;
+const SFX_YOU_WERE_BANNED: u8 = 7;
+const SFX_YOU_WERE_POKED: u8 = 8;
+const SFX_CHAT_INBOUND: u8 = 9;
+const SFX_CHAT_OUTBOUND: u8 = 10;
+const SFX_CONNECTED: u8 = 11;
+const SFX_DISCONNECTED: u8 = 12;
+const SFX_CONNECTION_LOST: u8 = 13;
+const SFX_ERROR: u8 = 14;
+const SFX_MIC_ACTIVATED: u8 = 15;
+const SFX_MIC_MUTED: u8 = 16;
+const SFX_SOUND_MUTED: u8 = 17;
+const SFX_SOUND_RESUMED: u8 = 18;
+const SFX_AWAY_ACTIVATED: u8 = 19;
+const SFX_AWAY_DEACTIVATED: u8 = 20;
+const SFX_CHANNEL_CREATED: u8 = 21;
+const SFX_CHANNEL_DELETED: u8 = 22;
+const SFX_CHANNEL_EDITED: u8 = 23;
+const SFX_CHANNEL_MOVED: u8 = 24;
+const SFX_CHANNELGROUP_CHANGED: u8 = 25;
+const SFX_NEUTRAL_CONN_CONNECTED: u8 = 26;
+const SFX_NEUTRAL_CONN_DISCONNECTED: u8 = 27;
+const SFX_NEUTRAL_CONN_LOST: u8 = 28;
+const SFX_NEUTRAL_MOVED_TO_CURRENT: u8 = 29;
+const SFX_NEUTRAL_MOVED_AWAY: u8 = 30;
+const SFX_NEUTRAL_KICKED_CH_TO_CURRENT: u8 = 31;
+const SFX_NEUTRAL_KICKED_CH_AWAY: u8 = 32;
+const SFX_NEUTRAL_KICKED_SERVER: u8 = 33;
+const SFX_NEUTRAL_BANNED_SERVER: u8 = 34;
+const SFX_NEUTRAL_RECORDING_STARTED: u8 = 35;
+const SFX_NEUTRAL_RECORDING_STOPPED: u8 = 36;
+const SFX_NEUTRAL_RECORDING_ACTIVE: u8 = 37;
+
+/// One parallel SFX playback slot owned by the cpal callback closure.
+/// `kind` is the SFX request id (1..=37, see the consts above);
+/// `kind == 0` means the slot is idle. `pos` is the sample position within
+/// the current sample.
+#[derive(Clone, Copy, Default)]
+struct SfxSlot {
+    kind: u8,
+    pos: usize,
+}
+
 /// Drop the current cpal output stream and rebuild it on the current default
 /// output device (same config and mixing callback as the initial build).
 /// Resets playback state exactly like `ts_stop_audio` — buffers are cleared
@@ -492,6 +556,7 @@ fn decode_to_client_buffer(audio_buf: InAudioBuf) {
 fn restart_output_stream() {
     // Drop the old stream first so the new one is the only active consumer.
     AUDIO_STREAM.lock().unwrap().0 = None;
+    crate::clear_sfx_queue();
     CLIENT_BUFFERS.clear();
     AUDIO_DECODERS.clear();
     AUDIO_DECODERS_STEREO.clear();
@@ -510,6 +575,7 @@ fn restart_output_stream() {
             {
                 let current_mix_slot = std::cell::Cell::new(u64::MAX);
                 let current_mix_buf = std::cell::RefCell::new([0.0f32; FRAME_SIZE as usize]);
+                let sfx_slots = std::cell::RefCell::new([SfxSlot::default(); 2]);
                 let cb_seq = std::cell::Cell::new(0u64);
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     // ── diagnostics: first 3 callbacks print liveness ──────────
@@ -580,6 +646,72 @@ fn restart_output_stream() {
                             };
                             for s in &mut mix_buf {
                                 *s = (*s * atten).clamp(-32768.0, 32767.0) / 32768.0;
+                            }
+
+                            // Phase C: channel-event SFX — start queued requests
+                            // in the two parallel slots and mix them on top of
+                            // the (already attenuated) voice at fixed 0.5 gain.
+                            {
+                                let mut slots = sfx_slots.borrow_mut();
+                                loop {
+                                    match SFX_QUEUE.pop() {
+                                        None => break,
+                                        Some(kind) => {
+                                            if let Some(slot) =
+                                                slots.iter_mut().find(|s| s.kind == 0)
+                                            {
+                                                slot.kind = kind;
+                                                slot.pos = 0;
+                                            } else {
+                                                // Both slots busy — drop the
+                                                // request rather than let the
+                                                // queue grow unbounded.
+                                                eprintln!(
+                                                    "[sfx] dropped request kind={} (both slots busy)",
+                                                    kind
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                // Load the active sample table only when at
+                                // least one slot is playing (ArcSwap::load is
+                                // lock-free, but there is no reason to touch it
+                                // while every slot is idle).
+                                if slots.iter().any(|s| s.kind != 0) {
+                                    let samples = crate::SFX_SAMPLES.load();
+                                    for slot in slots.iter_mut() {
+                                        if slot.kind == 0 {
+                                            continue;
+                                        }
+                                        let src: &[f32] =
+                                            match &samples[(slot.kind - 1) as usize] {
+                                                Some(s) => s.as_slice(),
+                                                None => &[],
+                                            };
+                                        if slot.pos >= src.len() {
+                                            // Empty/consumed sample: request done.
+                                            slot.kind = 0;
+                                            continue;
+                                        }
+                                        let mut i = 0usize;
+                                        while i < FRAME_SIZE as usize
+                                            && slot.pos + i < src.len()
+                                        {
+                                            mix_buf[i] += src[slot.pos + i] * 0.5;
+                                            i += 1;
+                                        }
+                                        slot.pos += i;
+                                        if slot.pos >= src.len() {
+                                            slot.kind = 0;
+                                        }
+                                    }
+                                }
+                            }
+                            // Final clamp after SFX mixing (voice was already
+                            // clamped in Phase B).
+                            for s in &mut mix_buf {
+                                *s = s.clamp(-1.0, 1.0);
                             }
 
                             *current_mix_buf.borrow_mut() = mix_buf;
@@ -717,12 +849,397 @@ fn spawn_maintenance_task() {
     });
 }
 
-/// Handle a non-audio stream item (book events, messages, disconnects).
+/// Push one SFX request into the playback queue with a log line.
+fn push_sfx(kind: u8, detail: &str) {
+    SFX_QUEUE.push(kind);
+    eprintln!("[sfx] kind={} {}", kind, detail);
+}
+
+/// Tear down the output stream and all playback state. This is the exact
+/// body the disconnect paths used to run inline; it is reused by the
+/// deferred teardown task so a disconnect/error sound can finish playing.
+fn teardown_output_state() {
+    AUDIO_STREAM.lock().unwrap().0 = None;
+    crate::clear_sfx_queue();
+    CLIENT_BUFFERS.clear();
+    AUDIO_DECODERS.clear();
+    AUDIO_DECODERS_STEREO.clear();
+    PLAYED_SAMPLES.store(0, Ordering::Relaxed);
+    ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
+}
+
+/// Queue a disconnect/error SFX and defer the output-stream teardown until
+/// the *active* sample (built-in or custom override) has finished playing,
+/// plus a 400ms margin. Custom samples are capped at 2s, so the stream is
+/// never held longer than ~2.4s. The deferred task re-checks `connected` so
+/// a fast reconnect does not tear down the new connection's buffers.
+fn schedule_sfx_teardown(kind: u8) {
+    let samples = crate::SFX_SAMPLES.load();
+    let len = samples[(kind - 1) as usize]
+        .as_ref()
+        .map(|s| s.len())
+        .unwrap_or(0);
+    drop(samples);
+    let play_ms = (len as u64 * 1000 / 48_000) + 400;
+    SFX_QUEUE.push(kind);
+    SFX_DEFERRED_TEARDOWN.store(true, Ordering::Relaxed);
+    eprintln!("[sfx] kind={} queued, deferred teardown in {}ms", kind, play_ms);
+    RUNTIME.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(play_ms)).await;
+        SFX_DEFERRED_TEARDOWN.store(false, Ordering::Relaxed);
+        if !STATE.lock().connected {
+            teardown_output_state();
+        }
+    });
+}
+
+/// Event-driven SFX detection: for each `BookEvents` batch we snapshot the
+/// book once via `con.get_state()` (it already reflects this batch's
+/// changes) and classify every event against our own client and channel.
+/// Triggering events push one SFX request each (deduped per batch where a
+/// single notify can produce several `PropertyChanged` events), which the
+/// cpal callback plays through the two parallel SFX slots.
+fn maybe_trigger_sfx(
+    ev: &tsclientlib::events::Event,
+    own_client: Option<ClientId>,
+    own_channel: Option<ChannelId>,
+    book: &tsclientlib::data::Connection,
+    batch_fired: &mut u32,
+    batch_handled: &mut HashSet<ClientId>,
+) {
+    use tsclientlib::events::{PropertyId, PropertyValue};
+    use tsclientlib::{MessageTarget, Reason};
+
+    if !SFX_ARMED.load(Ordering::Relaxed) {
+        return;
+    }
+    let own_client = match own_client {
+        Some(id) => id,
+        None => return,
+    };
+    let own_channel = match own_channel {
+        Some(ch) => ch,
+        None => return,
+    };
+
+    // Per-batch dedupe helper: only channel_edited / channel_moved need it
+    // (one notify emits several PropertyChanged events).
+    let mut dedupe = |kind: u8| -> bool {
+        let bit = 1u32 << (kind - 1);
+        if *batch_fired & bit != 0 {
+            true
+        } else {
+            *batch_fired |= bit;
+            false
+        }
+    };
+
+    let trigger: Option<(u8, String)> = match ev {
+        tsclientlib::events::Event::Message { target, invoker, .. } => match target {
+            // A poke is a dedicated Message target (notifyclientpoke).
+            MessageTarget::Poke(_) => Some((SFX_YOU_WERE_POKED, invoker.name.clone())),
+            // Own messages are echoed back by the server — the outbound
+            // sound already played at send time, so skip them here.
+            _ if invoker.id != own_client => Some((SFX_CHAT_INBOUND, invoker.name.clone())),
+            _ => return,
+        },
+        tsclientlib::events::Event::PropertyAdded { id, invoker, extra, .. } => match id {
+            PropertyId::Client(cid) => {
+                // Someone entered our view. Initial subscribe/resync uses the
+                // Subscription reason and stays silent; our own client is
+                // handled by the roster sync as well.
+                if *cid == own_client || extra.reason == Some(Reason::Subscription) {
+                    return;
+                }
+                match book.clients.get(cid) {
+                    Some(c) if c.channel == own_channel => {
+                        if !batch_handled.insert(*cid) {
+                            return; // movement already accounted for this client
+                        }
+                        // Official pack: enterview with no reason = the user
+                        // connected to the server; Moved/KickChannel = they
+                        // were moved/kicked into view.
+                        match extra.reason {
+                            Some(Reason::None) => {
+                                Some((SFX_NEUTRAL_CONN_CONNECTED, c.name.clone()))
+                            }
+                            Some(Reason::Moved) => {
+                                Some((SFX_NEUTRAL_MOVED_TO_CURRENT, c.name.clone()))
+                            }
+                            Some(Reason::KickChannel) => {
+                                Some((SFX_NEUTRAL_KICKED_CH_TO_CURRENT, c.name.clone()))
+                            }
+                            _ => return,
+                        }
+                    }
+                    _ => return,
+                }
+            }
+            // A new channel appeared. Only a live creation carries an
+            // invoker (the creator); the initial channellist and the
+            // subscribe-all replay have none and must stay silent — the
+            // SFX_ARMED flag alone is not enough because the sync arrives
+            // in later BookEvents batches than the one that arms it.
+            PropertyId::Channel(_) => match invoker {
+                Some(_) => Some((SFX_CHANNEL_CREATED, "".to_string())),
+                None => return,
+            },
+            _ => return,
+        },
+        tsclientlib::events::Event::PropertyChanged { id, old, invoker, extra, .. } => match id {
+            PropertyId::ClientChannel(cid) => {
+                let old_channel = match old {
+                    PropertyValue::ChannelId(ch) => *ch,
+                    _ => return,
+                };
+                let new_client = match book.clients.get(cid) {
+                    Some(c) => c,
+                    None => return,
+                };
+                let new_channel = new_client.channel;
+                if old_channel == new_channel {
+                    return;
+                }
+                if *cid == own_client {
+                    // Kicked from our channel: the server may deliver the
+                    // kick as a clientmove (reasonid=4) instead of a
+                    // clientleftview, so handle it here too.
+                    if extra.reason == Some(Reason::KickChannel) {
+                        Some((SFX_YOU_KICKED_CHANNEL, new_client.name.clone()))
+                    } else {
+                        let sound = match invoker {
+                            // Moved by someone else plays you_were_moved;
+                            // a voluntary move plays channel_switched.
+                            Some(inv) if inv.id != own_client => SFX_YOU_WERE_MOVED,
+                            _ => SFX_CHANNEL_SWITCHED,
+                        };
+                        // Official CLIENT_RECORDING_IN_CHANNEL: entering a
+                        // channel that already has a recorder.
+                        if book.clients.values().any(|c| {
+                            c.id != own_client && c.channel == new_channel && c.is_recording
+                        }) {
+                            push_sfx(SFX_NEUTRAL_RECORDING_ACTIVE, "recorder in channel");
+                        }
+                        Some((sound, new_client.name.clone()))
+                    }
+                } else {
+                    if !batch_handled.insert(*cid) {
+                        return; // movement already accounted for this client
+                    }
+                    // Other client moved between channels: classify by reason
+                    // (None = self-switch, Moved = admin-moved, KickChannel =
+                    // kicked from channel) against our own channel.
+                    if old_channel == own_channel && new_channel != own_channel {
+                        let sound = match extra.reason {
+                            Some(Reason::KickChannel) => SFX_NEUTRAL_KICKED_CH_AWAY,
+                            Some(Reason::Moved) => SFX_NEUTRAL_MOVED_AWAY,
+                            _ => SFX_NEUTRAL_AWAY_FROM_CURRENT,
+                        };
+                        Some((sound, new_client.name.clone()))
+                    } else if old_channel != own_channel && new_channel == own_channel {
+                        let sound = match extra.reason {
+                            Some(Reason::KickChannel) => SFX_NEUTRAL_KICKED_CH_TO_CURRENT,
+                            Some(Reason::Moved) => SFX_NEUTRAL_MOVED_TO_CURRENT,
+                            _ => SFX_NEUTRAL_TO_CURRENT,
+                        };
+                        Some((sound, new_client.name.clone()))
+                    } else {
+                        return;
+                    }
+                }
+            }
+            // Recording state of a client in our channel.
+            PropertyId::ClientIsRecording(cid) => {
+                let client = match book.clients.get(cid) {
+                    Some(c) => c,
+                    None => return,
+                };
+                if *cid == own_client || client.channel != own_channel {
+                    return;
+                }
+                match old {
+                    PropertyValue::Bool(old_rec) => {
+                        if client.is_recording == *old_rec {
+                            return;
+                        }
+                        if client.is_recording {
+                            Some((SFX_NEUTRAL_RECORDING_STARTED, client.name.clone()))
+                        } else {
+                            Some((SFX_NEUTRAL_RECORDING_STOPPED, client.name.clone()))
+                        }
+                    }
+                    _ => return,
+                }
+            }
+            // A channel was moved (parent changed). Order-only changes and
+            // subscribe/bookkeeping updates are ignored.
+            PropertyId::ChannelParent(_) => {
+                if dedupe(SFX_CHANNEL_MOVED) {
+                    return;
+                }
+                Some((SFX_CHANNEL_MOVED, "".to_string()))
+            }
+            PropertyId::ChannelOrder(_)
+            | PropertyId::ChannelSubscribed(_)
+            | PropertyId::ChannelPermissionHints(_) => return,
+            // Anything else on a Channel is an edit (name, topic, codec, ...).
+            PropertyId::ChannelName(_)
+            | PropertyId::ChannelGuid(_)
+            | PropertyId::ChannelTopic(_)
+            | PropertyId::ChannelCodec(_)
+            | PropertyId::ChannelCodecQuality(_)
+            | PropertyId::ChannelMaxClients(_)
+            | PropertyId::ChannelMaxFamilyClients(_)
+            | PropertyId::ChannelChannelType(_)
+            | PropertyId::ChannelIsDefault(_)
+            | PropertyId::ChannelHasPassword(_)
+            | PropertyId::ChannelCodecLatencyFactor(_)
+            | PropertyId::ChannelIsUnencrypted(_)
+            | PropertyId::ChannelDeleteDelay(_)
+            | PropertyId::ChannelNeededTalkPower(_)
+            | PropertyId::ChannelForcedSilence(_)
+            | PropertyId::ChannelPhoneticName(_)
+            | PropertyId::ChannelIcon(_)
+            | PropertyId::ChannelIsPrivate(_)
+            | PropertyId::ChannelStorageQuota(_) => {
+                if dedupe(SFX_CHANNEL_EDITED) {
+                    return;
+                }
+                Some((SFX_CHANNEL_EDITED, "".to_string()))
+            }
+            // Own-client state echoed by the server.
+            PropertyId::ClientInputMuted(cid) if *cid == own_client => {
+                match book.clients.get(cid).map(|c| c.input_muted) {
+                    Some(true) => Some((SFX_MIC_MUTED, "".to_string())),
+                    Some(false) => Some((SFX_MIC_ACTIVATED, "".to_string())),
+                    None => return,
+                }
+            }
+            PropertyId::ClientOutputMuted(cid) if *cid == own_client => {
+                match book.clients.get(cid).map(|c| c.output_muted) {
+                    Some(true) => Some((SFX_SOUND_MUTED, "".to_string())),
+                    Some(false) => Some((SFX_SOUND_RESUMED, "".to_string())),
+                    None => return,
+                }
+            }
+            PropertyId::ClientAwayMessage(cid) if *cid == own_client => {
+                match book.clients.get(cid).and_then(|c| c.away_message.as_ref()) {
+                    Some(_) => Some((SFX_AWAY_ACTIVATED, "".to_string())),
+                    None => Some((SFX_AWAY_DEACTIVATED, "".to_string())),
+                }
+            }
+            PropertyId::ClientChannelGroup(cid) if *cid == own_client => {
+                // Joining a channel auto-assigns the channel's default
+                // channel group; the server broadcasts that as an update
+                // (notifyclientupdated with client_channel_group_id) with
+                // no real invoker. That is not a real group change — TS3
+                // plays this sound only when an admin changes the group —
+                // so require a genuine third-party invoker.
+                let real_invoker = match invoker {
+                    Some(inv) => inv.id != own_client && inv.id != ClientId(0),
+                    None => false,
+                };
+                if !real_invoker {
+                    eprintln!(
+                        "[sfx] own channel-group update skipped (invoker={:?})",
+                        invoker.as_ref().map(|i| (i.id.0, i.name.clone()))
+                    );
+                    return;
+                }
+                Some((SFX_CHANNELGROUP_CHANGED, "".to_string()))
+            }
+            _ => return,
+        },
+        tsclientlib::events::Event::PropertyRemoved { id, old, extra, .. } => match id {
+            PropertyId::Client(cid) => {
+                let removed = match old {
+                    PropertyValue::Client(c) => c,
+                    _ => return,
+                };
+                if *cid == own_client {
+                    // Our own client left the server view. Only kicks and
+                    // bans produce a sound; everything else (normal leave,
+                    // server shutdown, ...) is covered by the disconnect
+                    // sound and must not double-fire. The ban case also
+                    // suppresses the upcoming "disconnected" sound.
+                    match extra.reason {
+                        Some(Reason::KickChannel) => {
+                            Some((SFX_YOU_KICKED_CHANNEL, removed.name.clone()))
+                        }
+                        Some(Reason::KickServer) => {
+                            Some((SFX_YOU_KICKED_SERVER, removed.name.clone()))
+                        }
+                        Some(Reason::KickServerBan) => {
+                            SFX_SUPPRESS_DISCONNECT.store(true, Ordering::Relaxed);
+                            Some((SFX_YOU_WERE_BANNED, removed.name.clone()))
+                        }
+                        _ => return,
+                    }
+                } else if removed.channel != own_channel {
+                    // Not in our channel — no sound.
+                    return;
+                } else {
+                    if !batch_handled.insert(*cid) {
+                        return; // movement already accounted for this client
+                    }
+                    // Someone in our channel left the server (reasonid 0 =
+                    // normal quit, 3 = timeout, 4/5/6 = kicked/banned,
+                    // 1 = moved away).
+                    match extra.reason {
+                        Some(Reason::LostConnection) => {
+                            Some((SFX_NEUTRAL_CONN_LOST, removed.name.clone()))
+                        }
+                        Some(Reason::KickChannel) => {
+                            Some((SFX_NEUTRAL_KICKED_CH_AWAY, removed.name.clone()))
+                        }
+                        Some(Reason::KickServer) => {
+                            Some((SFX_NEUTRAL_KICKED_SERVER, removed.name.clone()))
+                        }
+                        Some(Reason::KickServerBan) => {
+                            Some((SFX_NEUTRAL_BANNED_SERVER, removed.name.clone()))
+                        }
+                        Some(Reason::Moved) => {
+                            Some((SFX_NEUTRAL_MOVED_AWAY, removed.name.clone()))
+                        }
+                        Some(Reason::None) | Some(Reason::Clientdisconnect) => {
+                            Some((SFX_NEUTRAL_CONN_DISCONNECTED, removed.name.clone()))
+                        }
+                        // Subscription / Channelupdate / Channeledit /
+                        // Serverstop / ClientdisconnectServerShutdown: not a
+                        // real leave, stay quiet.
+                        _ => return,
+                    }
+                }
+            }
+            PropertyId::Channel(_) => Some((SFX_CHANNEL_DELETED, "".to_string())),
+            _ => return,
+        },
+    };
+
+    if let Some((kind, detail)) = trigger {
+        push_sfx(kind, &detail);
+    }
+}
+
 fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64) {
     let handle_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match item {
             StreamItem::Audio(_) => {} // handled upstream
             StreamItem::BookEvents(events) => {
+                // Snapshot the book once per batch — it already includes this
+                // batch's changes, so each event can be evaluated against the
+                // state that results from it.
+                let book = con.get_state().ok();
+                let own_client = book.as_ref().map(|b| b.own_client);
+                let own_channel = book
+                    .as_ref()
+                    .and_then(|b| b.clients.get(&b.own_client))
+                    .map(|c| c.channel);
+                // Per-batch dedupe mask for channel_edited / channel_moved,
+                // and per-client set so a kicked client (leftview + moved in
+                // the same batch) only ever produces one sound.
+                let mut batch_fired: u32 = 0;
+                let mut batch_handled: HashSet<ClientId> = HashSet::new();
                 for ev in events {
                     match ev {
                         tsclientlib::events::Event::Message {
@@ -742,18 +1259,28 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                                 target_mode,
                                 message: message.clone(),
                             });
+                            if let Some(b) = book.as_ref() {
+                                maybe_trigger_sfx(ev, own_client, own_channel, b, &mut batch_fired, &mut batch_handled);
+                            }
                         }
                         _ => {
-                            let refreshed = con.get_state().ok().map(|b| refresh_from_book(&b));
-                            if let Some((ch, cl)) = refreshed {
+                            if let Some(b) = book.as_ref() {
+                                let (ch, cl) = refresh_from_book(b);
                                 let mut state = STATE.lock();
                                 state.channels = ch;
                                 state.clients = cl;
                                 state.pending_events.push_back(TsEvent::ChannelsUpdated {});
+                                drop(state);
+                                maybe_trigger_sfx(ev, own_client, own_channel, b, &mut batch_fired, &mut batch_handled);
                             }
                         }
                     }
                 }
+                // The first BookEvents batch processed by the event loop may
+                // still be the tail of the initial roster sync (and on a
+                // temporary-disconnect reconnect it is the full resync), so it
+                // is consumed silently; everything after it is real activity.
+                SFX_ARMED.store(true, Ordering::Relaxed);
             }
             StreamItem::MessageEvent(msg) => {
                 use tsclientlib::messages::s2c::InMessage;
@@ -769,6 +1296,13 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                 }
             }
             StreamItem::DisconnectedTemporarily(r) => {
+                // On reconnect the library replays the whole roster as fresh
+                // additions; disarm so that resync stays silent.
+                SFX_ARMED.store(false, Ordering::Relaxed);
+                // The output stream stays up during a temporary disconnect
+                // (the library reconnects on its own), so the connection_lost
+                // sound plays through it normally.
+                push_sfx(SFX_CONNECTION_LOST, "temp disconnect");
                 STATE.lock().pending_events.push_back(TsEvent::Error {
                     message: format!("Temp disconnected: {:?}", r),
                 });
@@ -821,12 +1355,9 @@ async fn event_loop(
                     });
                 STATE.lock().connected = false;
                 STATE.lock().disconnect_requested = false;
-                AUDIO_STREAM.lock().unwrap().0 = None;
-                CLIENT_BUFFERS.clear();
-                AUDIO_DECODERS.clear();
-                AUDIO_DECODERS_STEREO.clear();
-                PLAYED_SAMPLES.store(0, Ordering::Relaxed);
-                ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
+                // Keep the output stream alive until the disconnect sound
+                // has finished playing; the deferred task tears it down.
+                schedule_sfx_teardown(SFX_DISCONNECTED);
                 *COMMAND_TX.lock() = None;
             }
             return;
@@ -845,8 +1376,13 @@ async fn event_loop(
                         target_client_id: None,
                         message: Cow::Owned(message),
                     };
-                    let _ =
+                    let result =
                         OutSendTextMessageMessage::new(&mut std::iter::once(part)).send(&mut con);
+                    if result.is_ok() {
+                        // Outbound chat sound (the server echoes the message
+                        // back; the inbound sound skips our own echoes).
+                        push_sfx(SFX_CHAT_OUTBOUND, "message sent");
+                    }
                 }
                 Command::MoveChannel {
                     client_id,
@@ -878,6 +1414,38 @@ async fn event_loop(
                     };
                     let _ = OutClientUpdateMessage::new(&mut std::iter::once(part)).send(&mut con);
                 }
+                Command::SetAway { away } => {
+                    let part = OutClientUpdatePart {
+                        name: None,
+                        input_muted: None,
+                        output_muted: None,
+                        is_away: Some(away),
+                        away_message: if away {
+                            Some(Cow::Borrowed("Away"))
+                        } else {
+                            None
+                        },
+                        input_hardware_enabled: None,
+                        output_hardware_enabled: None,
+                        is_channel_commander: None,
+                        avatar_hash: None,
+                        phonetic_name: None,
+                        talk_power_request: None,
+                        talk_power_request_message: None,
+                        is_recording: None,
+                        badges: None,
+                    };
+                    let _ = OutClientUpdateMessage::new(&mut std::iter::once(part)).send(&mut con);
+                }
+                Command::SendPoke { client_id, message } => {
+                    // Poke is a dedicated clientpoke request message.
+                    let part = OutClientPokeRequestPart {
+                        client_id: ClientId(client_id),
+                        message: message.into(),
+                    };
+                    let _ =
+                        OutClientPokeRequestMessage::new(&mut std::iter::once(part)).send(&mut con);
+                }
                 Command::Disconnect => {
                     let _ = con.disconnect(DisconnectOptions::new());
                     let _ = con.events().for_each(|_| future::ready(())).await;
@@ -889,12 +1457,7 @@ async fn event_loop(
                         });
                         s.connected = false;
                         drop(s);
-                        AUDIO_STREAM.lock().unwrap().0 = None;
-                        CLIENT_BUFFERS.clear();
-                        AUDIO_DECODERS.clear();
-                        AUDIO_DECODERS_STEREO.clear();
-                        PLAYED_SAMPLES.store(0, Ordering::Relaxed);
-                        ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
+                        schedule_sfx_teardown(SFX_DISCONNECTED);
                         *COMMAND_TX.lock() = None;
                     }
                     return;
@@ -1002,6 +1565,15 @@ async fn event_loop(
                     STATE.lock().pending_events.push_back(TsEvent::Error {
                         message: format!("{}", e),
                     });
+                    // End the session visibly (Dart ignores `error` events
+                    // once connected) and let the error sound finish before
+                    // tearing the stream down.
+                    STATE.lock().connected = false;
+                    STATE.lock().pending_events.push_back(TsEvent::Disconnected {
+                        reason: format!("Connection error: {}", e),
+                    });
+                    schedule_sfx_teardown(SFX_ERROR);
+                    *COMMAND_TX.lock() = None;
                 }
                 break;
             }
@@ -1015,12 +1587,14 @@ async fn event_loop(
                         reason: "Connection closed by server".into(),
                     });
                     drop(s);
-                    AUDIO_STREAM.lock().unwrap().0 = None;
-                    CLIENT_BUFFERS.clear();
-                    AUDIO_DECODERS.clear();
-                    AUDIO_DECODERS_STEREO.clear();
-                    PLAYED_SAMPLES.store(0, Ordering::Relaxed);
-                    ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
+                    if SFX_SUPPRESS_DISCONNECT.load(Ordering::Relaxed) {
+                        // Kicked/banned: the kick sound just played — do not
+                        // stack the disconnect sound on top of it.
+                        SFX_SUPPRESS_DISCONNECT.store(false, Ordering::Relaxed);
+                        teardown_output_state();
+                    } else {
+                        schedule_sfx_teardown(SFX_DISCONNECTED);
+                    }
                     *COMMAND_TX.lock() = None;
                 }
                 break;
@@ -1045,6 +1619,12 @@ async fn event_loop(
                         STATE.lock().pending_events.push_back(TsEvent::Error {
                             message: format!("{}", e),
                         });
+                        STATE.lock().connected = false;
+                        STATE.lock().pending_events.push_back(TsEvent::Disconnected {
+                            reason: format!("Connection error: {}", e),
+                        });
+                        schedule_sfx_teardown(SFX_ERROR);
+                        *COMMAND_TX.lock() = None;
                     }
                     break;
                 }
@@ -1057,12 +1637,12 @@ async fn event_loop(
                             reason: "Connection closed by server".into(),
                         });
                         drop(s);
-                        AUDIO_STREAM.lock().unwrap().0 = None;
-                        CLIENT_BUFFERS.clear();
-                        AUDIO_DECODERS.clear();
-                        AUDIO_DECODERS_STEREO.clear();
-                        PLAYED_SAMPLES.store(0, Ordering::Relaxed);
-                        ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
+                        if SFX_SUPPRESS_DISCONNECT.load(Ordering::Relaxed) {
+                            SFX_SUPPRESS_DISCONNECT.store(false, Ordering::Relaxed);
+                            teardown_output_state();
+                        } else {
+                            schedule_sfx_teardown(SFX_DISCONNECTED);
+                        }
                         *COMMAND_TX.lock() = None;
                     }
                     break;
@@ -1403,12 +1983,15 @@ pub extern "C" fn ts_stop_audio() {
     let mut state = STATE.lock();
     state.audio_encoder = None;
     drop(state);
-    AUDIO_STREAM.lock().unwrap().0 = None;
-    CLIENT_BUFFERS.clear();
-    AUDIO_DECODERS.clear();
-    AUDIO_DECODERS_STEREO.clear();
-    PLAYED_SAMPLES.store(0, Ordering::Relaxed);
-    ACTIVE_CLIENT_IDS.store(std::sync::Arc::new(Vec::new()));
+    if SFX_DEFERRED_TEARDOWN.load(Ordering::Relaxed) {
+        // A disconnect/error sound is still playing through the output
+        // stream (Dart calls this on the `disconnected` event, which fires
+        // right when the sound is queued). Leave the stream alone — the
+        // deferred teardown task drops it once the sample finished.
+        eprintln!("ts_stop_audio: deferred teardown pending, keeping stream");
+        return;
+    }
+    teardown_output_state();
 }
 
 #[no_mangle]
@@ -1432,4 +2015,133 @@ pub extern "C" fn ts_send_audio(data: *const f32, data_len: u32) -> u8 {
     } else {
         0
     }
+}
+
+// ─── SFX (custom samples / preview / local triggers) ─────────────────
+
+/// Set our own away state. The server echoes the change back, which drives
+/// the away_activated/away_deactivated sounds via the event loop.
+/// Returns 1 when the command was queued, 0 when not connected.
+#[no_mangle]
+pub extern "C" fn ts_set_away(away: u8) -> u8 {
+    if !STATE.lock().connected {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::SetAway { away: away != 0 })
+            .is_ok()
+        {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+/// Poke another client (sends a notifyclientpoke request). Returns 1 when
+/// the command was queued, 0 when not connected.
+#[no_mangle]
+pub extern "C" fn ts_send_poke(client_id: u16, msg: *const c_char) -> u8 {
+    let message = if msg.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(msg) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    if !STATE.lock().connected {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::SendPoke {
+                client_id,
+                message,
+            })
+            .is_ok()
+        {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+/// Install a custom SFX sample. `kind` is 1..=37 (see the SFX_* consts);
+/// `data` points to `len` bytes of a RIFF/WAVE file (PCM 16-bit or IEEE
+/// float32, 1/2 channels, ≤2s — anything else is rejected without touching
+/// the currently active sample).
+///
+/// Returns 0 on success, 1 for an invalid kind, 2 for an unsupported format,
+/// 3 for empty/too-long input.
+#[no_mangle]
+pub extern "C" fn ts_set_sfx_sample(kind: u8, data: *const u8, len: usize) -> i32 {
+    if !(1..=37).contains(&kind) {
+        return 1;
+    }
+    if data.is_null() || len == 0 {
+        return 3;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    match crate::parse_wav_pcm(bytes) {
+        Ok(samples) => {
+            let guard = crate::SFX_SAMPLES.load();
+            let mut next = (**guard).clone();
+            drop(guard);
+            next[(kind - 1) as usize] = Some(std::sync::Arc::new(samples));
+            crate::SFX_SAMPLES.store(std::sync::Arc::new(next));
+            eprintln!("[sfx] set custom sample kind={}", kind);
+            0
+        }
+        Err(msg) => {
+            eprintln!("[sfx] set kind={} rejected: {}", kind, msg);
+            if msg.contains("too long") || msg.contains("no audio data") {
+                3
+            } else {
+                2
+            }
+        }
+    }
+}
+
+/// Restore the built-in sample for an SFX kind (1..=37). Returns 0 on
+/// success, 1 for an invalid kind.
+#[no_mangle]
+pub extern "C" fn ts_clear_sfx_sample(kind: u8) -> i32 {
+    if !(1..=37).contains(&kind) {
+        return 1;
+    }
+    let guard = crate::SFX_SAMPLES.load();
+    let mut next = (**guard).clone();
+    drop(guard);
+    next[(kind - 1) as usize] = crate::SFX_BUILTIN[(kind - 1) as usize]
+        .as_ref()
+        .map(|s| std::sync::Arc::new(s.clone()));
+    crate::SFX_SAMPLES.store(std::sync::Arc::new(next));
+    eprintln!("[sfx] restored builtin sample kind={}", kind);
+    0
+}
+
+/// Play the active sample for an SFX kind immediately (settings-page
+/// preview). If no cpal output stream is running, one is started first — the
+/// queue push happens after the rebuild so it is not drained by it.
+/// Returns 0 on success, 1 for an invalid kind.
+#[no_mangle]
+pub extern "C" fn ts_play_sfx(kind: u8) -> i32 {
+    if !(1..=37).contains(&kind) {
+        return 1;
+    }
+    if AUDIO_STREAM.lock().unwrap().0.is_none() {
+        restart_output_stream();
+    }
+    crate::SFX_QUEUE.push(kind);
+    eprintln!("[sfx] manual preview kind={}", kind);
+    0
 }

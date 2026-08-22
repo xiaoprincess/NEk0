@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../l10n/generated/app_localizations.dart';
@@ -7,6 +10,7 @@ import '../models/app_locale.dart';
 import '../models/ts_state.dart';
 import '../services/audio_service.dart';
 import '../services/ota_service.dart';
+import '../services/sfx_service.dart';
 import '../widgets/voice_settings_panel.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -26,6 +30,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   AudioService? _testAudio;
   bool _micTest = false;
   double _testRms = 0.0;
+  final Map<int, String?> _sfxNames = {};
 
   @override
   void initState() {
@@ -34,6 +39,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (mounted) setState(() => _otaLoaded = true);
     });
     _loadLanguage();
+    _loadSfxNames();
   }
 
   Future<void> _loadLanguage() async {
@@ -113,6 +119,299 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     } else {
       await showUpdateDialog(context, info);
     }
+  }
+
+  Future<void> _loadSfxNames() async {
+    final names = <int, String?>{};
+    for (final kind in SfxKind.all) {
+      names[kind] = await SfxService.customName(kind);
+    }
+    if (mounted) {
+      setState(() {
+        _sfxNames
+          ..clear()
+          ..addAll(names);
+      });
+    }
+  }
+
+  Future<void> _pickSfx(int kind) async {
+    PlatformFile? file;
+    try {
+      file = await FilePicker.pickFile(
+        type: FileType.custom,
+        allowedExtensions: ['wav'],
+      );
+    } catch (_) {
+      file = null;
+    }
+    if (!mounted || file == null) return;
+    Uint8List? bytes;
+    try {
+      bytes = await file.readAsBytes();
+    } catch (_) {
+      bytes = null;
+    }
+    final al = AppLocalizations.of(context);
+    if (bytes == null || bytes.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(al.sfxFormatError)));
+      return;
+    }
+    var code = SfxError.invalidKind;
+    try {
+      code = await SfxService.setCustom(kind, bytes, fileName: file.name);
+    } catch (_) {
+      code = SfxError.invalidKind;
+    }
+    if (!mounted) return;
+    switch (code) {
+      case SfxError.emptyOrTooLong:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(al.sfxTooLong)));
+        break;
+      case 0:
+        await _loadSfxNames();
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(al.sfxImported)));
+        break;
+      default:
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              code == SfxError.unsupportedFormat
+                  ? al.sfxFormatError
+                  : al.sfxImportFailed,
+            ),
+          ),
+        );
+    }
+  }
+
+  Future<void> _resetSfx(int kind) async {
+    try {
+      await SfxService.resetToDefault(kind);
+    } catch (_) {
+      // Ignore file/prefs errors — the built-in sample is still restored
+      // next time the app starts if the file could not be deleted.
+    }
+    if (mounted) await _loadSfxNames();
+  }
+
+  void _previewSfx(int kind) {
+    SfxService.preview(kind);
+  }
+
+  String _sfxLabel(AppLocalizations al, int kind) {
+    return switch (kind) {
+      SfxKind.channelSwitched => al.sfxChannelSwitched,
+      SfxKind.neutralToCurrent => al.sfxNeutralToCurrent,
+      SfxKind.neutralAwayFromCurrent => al.sfxNeutralAwayFromCurrent,
+      SfxKind.youWereMoved => al.sfxYouWereMoved,
+      SfxKind.youKickedChannel => al.sfxYouKickedChannel,
+      SfxKind.youKickedServer => al.sfxYouKickedServer,
+      SfxKind.youWereBanned => al.sfxYouWereBanned,
+      SfxKind.youWerePoked => al.sfxYouWerePoked,
+      SfxKind.chatInbound => al.sfxChatInbound,
+      SfxKind.chatOutbound => al.sfxChatOutbound,
+      SfxKind.connected => al.sfxConnected,
+      SfxKind.disconnected => al.sfxDisconnected,
+      SfxKind.connectionLost => al.sfxConnectionLost,
+      SfxKind.error => al.sfxError,
+      SfxKind.micActivated => al.sfxMicActivated,
+      SfxKind.micMuted => al.sfxMicMuted,
+      SfxKind.soundMuted => al.sfxSoundMuted,
+      SfxKind.soundResumed => al.sfxSoundResumed,
+      SfxKind.awayActivated => al.sfxAwayActivated,
+      SfxKind.awayDeactivated => al.sfxAwayDeactivated,
+      SfxKind.channelCreated => al.sfxChannelCreated,
+      SfxKind.channelDeleted => al.sfxChannelDeleted,
+      SfxKind.channelEdited => al.sfxChannelEdited,
+      SfxKind.channelMoved => al.sfxChannelMoved,
+      SfxKind.channelgroupChanged => al.sfxChannelgroupChanged,
+      SfxKind.neutralConnConnected => al.sfxNeutralConnConnected,
+      SfxKind.neutralConnDisconnected => al.sfxNeutralConnDisconnected,
+      SfxKind.neutralConnConnectionLost => al.sfxNeutralConnConnectionLost,
+      SfxKind.neutralMovedToCurrent => al.sfxNeutralMovedToCurrent,
+      SfxKind.neutralMovedAwayFromCurrent => al.sfxNeutralMovedAwayFromCurrent,
+      SfxKind.neutralKickedChannelToCurrent =>
+        al.sfxNeutralKickedChannelToCurrent,
+      SfxKind.neutralKickedChannelAwayFromCurrent =>
+        al.sfxNeutralKickedChannelAwayFromCurrent,
+      SfxKind.neutralKickedServer => al.sfxNeutralKickedServer,
+      SfxKind.neutralBannedServer => al.sfxNeutralBannedServer,
+      SfxKind.neutralRecordingStarted => al.sfxNeutralRecordingStarted,
+      SfxKind.neutralRecordingStopped => al.sfxNeutralRecordingStopped,
+      _ => al.sfxNeutralRecordingActive,
+    };
+  }
+
+  Widget _buildSfxRow(BuildContext context, int kind) {
+    final al = AppLocalizations.of(context);
+    final label = _sfxLabel(al, kind);
+    final name = _sfxNames[kind];
+    final isCustom = name != null && name.isNotEmpty;
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                isCustom ? name : al.sfxDefault,
+                style: TextStyle(
+                  color: isCustom ? Colors.blueAccent : Colors.grey,
+                  fontSize: 12,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          onPressed: () => _previewSfx(kind),
+          tooltip: al.sfxPreview,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.all(6),
+          icon: const Icon(Icons.play_circle_outline, size: 20),
+          color: Colors.blueAccent,
+        ),
+        IconButton(
+          onPressed: isCustom ? () => _resetSfx(kind) : null,
+          tooltip: al.sfxReset,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.all(6),
+          icon: const Icon(Icons.restore, size: 20),
+          color: Colors.blueAccent,
+        ),
+        const SizedBox(width: 4),
+        OutlinedButton(
+          onPressed: () => _pickSfx(kind),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.blueAccent,
+            side: const BorderSide(color: Color(0xFF2A2A4A)),
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            visualDensity: VisualDensity.compact,
+          ),
+          child: Text(al.sfxSelectWav, style: const TextStyle(fontSize: 12)),
+        ),
+      ],
+    );
+  }
+
+  /// SFX rows grouped by category: (group header, kinds in display order).
+  static final List<(String Function(AppLocalizations), List<int>)> _sfxGroups =
+      [
+        (
+          (al) => al.sfxGroupConnection,
+          const [
+            SfxKind.connected,
+            SfxKind.disconnected,
+            SfxKind.connectionLost,
+            SfxKind.error,
+          ],
+        ),
+        (
+          (al) => al.sfxGroupChannel,
+          const [
+            SfxKind.channelSwitched,
+            SfxKind.channelCreated,
+            SfxKind.channelDeleted,
+            SfxKind.channelEdited,
+            SfxKind.channelMoved,
+            SfxKind.channelgroupChanged,
+          ],
+        ),
+        (
+          (al) => al.sfxGroupUsers,
+          const [
+            SfxKind.neutralToCurrent,
+            SfxKind.neutralAwayFromCurrent,
+            SfxKind.neutralMovedToCurrent,
+            SfxKind.neutralMovedAwayFromCurrent,
+            SfxKind.neutralKickedChannelToCurrent,
+            SfxKind.neutralKickedChannelAwayFromCurrent,
+            SfxKind.neutralKickedServer,
+            SfxKind.neutralBannedServer,
+            SfxKind.neutralConnConnected,
+            SfxKind.neutralConnDisconnected,
+            SfxKind.neutralConnConnectionLost,
+            SfxKind.neutralRecordingStarted,
+            SfxKind.neutralRecordingStopped,
+            SfxKind.neutralRecordingActive,
+          ],
+        ),
+        (
+          (al) => al.sfxGroupAboutYou,
+          const [
+            SfxKind.youWereMoved,
+            SfxKind.youKickedChannel,
+            SfxKind.youKickedServer,
+            SfxKind.youWereBanned,
+            SfxKind.youWerePoked,
+          ],
+        ),
+        (
+          (al) => al.sfxGroupChat,
+          const [SfxKind.chatInbound, SfxKind.chatOutbound],
+        ),
+        (
+          (al) => al.sfxGroupVoice,
+          const [
+            SfxKind.micActivated,
+            SfxKind.micMuted,
+            SfxKind.soundMuted,
+            SfxKind.soundResumed,
+          ],
+        ),
+        (
+          (al) => al.sfxGroupOther,
+          const [SfxKind.awayActivated, SfxKind.awayDeactivated],
+        ),
+      ];
+
+  Widget _buildSfxSection(BuildContext context) {
+    final al = AppLocalizations.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(al.channelSounds),
+        const SizedBox(height: 8),
+        for (final (header, kinds) in _sfxGroups) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 14, bottom: 6),
+            child: Text(
+              header(al),
+              style: const TextStyle(color: Color(0xFF8888AA), fontSize: 12),
+            ),
+          ),
+          Card(
+            color: const Color(0xFF1A1A2E),
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+              child: Column(
+                children: [
+                  for (final kind in kinds) ...[
+                    if (kind != kinds.first)
+                      const Divider(height: 1, color: Color(0xFF2A2A4A)),
+                    _buildSfxRow(context, kind),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 
   @override
@@ -204,6 +503,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               ),
             ),
+            const SizedBox(height: 24),
+            _buildSfxSection(context),
             const SizedBox(height: 24),
             _SectionHeader(AppLocalizations.of(context).language),
             const SizedBox(height: 8),

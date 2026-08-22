@@ -180,6 +180,183 @@ class AppLocalizationsZh extends AppLocalizations {
   String get micGain => '麦克风增益';
 
   @override
+  String get channelSounds => '频道提示音';
+
+  @override
+  String get sfxGroupConnection => '连接';
+
+  @override
+  String get sfxGroupChannel => '频道';
+
+  @override
+  String get sfxGroupUsers => '其他用户';
+
+  @override
+  String get sfxGroupAboutYou => '关于你';
+
+  @override
+  String get sfxGroupChat => '聊天';
+
+  @override
+  String get sfxGroupVoice => '语音';
+
+  @override
+  String get sfxGroupOther => '其他';
+
+  @override
+  String get sfxChannelSwitched => '自己切换频道';
+
+  @override
+  String get sfxNeutralToCurrent => '有人切换进入你的频道';
+
+  @override
+  String get sfxNeutralAwayFromCurrent => '有人切换离开你的频道';
+
+  @override
+  String get sfxNeutralConnConnected => '有人连接到你的频道';
+
+  @override
+  String get sfxNeutralConnDisconnected => '有人断开连接';
+
+  @override
+  String get sfxNeutralConnConnectionLost => '有人连接超时';
+
+  @override
+  String get sfxNeutralMovedToCurrent => '有人被移入你的频道';
+
+  @override
+  String get sfxNeutralMovedAwayFromCurrent => '有人被移出你的频道';
+
+  @override
+  String get sfxNeutralKickedChannelToCurrent => '有人被踢入你的频道';
+
+  @override
+  String get sfxNeutralKickedChannelAwayFromCurrent => '有人被踢出你的频道';
+
+  @override
+  String get sfxNeutralKickedServer => '有人被踢出服务器';
+
+  @override
+  String get sfxNeutralBannedServer => '有人被封禁';
+
+  @override
+  String get sfxNeutralRecordingStarted => '有人开始录音';
+
+  @override
+  String get sfxNeutralRecordingStopped => '有人停止录音';
+
+  @override
+  String get sfxNeutralRecordingActive => '频道内有人正在录音';
+
+  @override
+  String get sfxYouWereMoved => '你被移动';
+
+  @override
+  String get sfxYouKickedChannel => '你被踢出频道';
+
+  @override
+  String get sfxYouKickedServer => '你被踢出服务器';
+
+  @override
+  String get sfxYouWereBanned => '你被封禁';
+
+  @override
+  String get sfxYouWerePoked => '你被 Poke';
+
+  @override
+  String get sfxChatInbound => '收到聊天消息';
+
+  @override
+  String get sfxChatOutbound => '发送聊天消息';
+
+  @override
+  String get sfxConnected => '连接成功';
+
+  @override
+  String get sfxDisconnected => '已断开';
+
+  @override
+  String get sfxConnectionLost => '连接丢失';
+
+  @override
+  String get sfxError => '错误';
+
+  @override
+  String get sfxMicActivated => '麦克风启用';
+
+  @override
+  String get sfxMicMuted => '麦克风静音';
+
+  @override
+  String get sfxSoundMuted => '扬声器静音';
+
+  @override
+  String get sfxSoundResumed => '扬声器恢复';
+
+  @override
+  String get sfxAwayActivated => '离开状态开启';
+
+  @override
+  String get sfxAwayDeactivated => '离开状态关闭';
+
+  @override
+  String get sfxChannelCreated => '频道创建';
+
+  @override
+  String get sfxChannelDeleted => '频道删除';
+
+  @override
+  String get sfxChannelEdited => '频道编辑';
+
+  @override
+  String get sfxChannelMoved => '频道移动';
+
+  @override
+  String get sfxChannelgroupChanged => '频道组变更';
+
+  @override
+  String get sfxDefault => '默认';
+
+  @override
+  String get sfxPreview => '试听';
+
+  @override
+  String get sfxSelectWav => '选择 WAV';
+
+  @override
+  String get sfxReset => '恢复默认';
+
+  @override
+  String get sfxImported => '自定义提示音已保存。';
+
+  @override
+  String get sfxTooLong => '音频过长（最长 2 秒）。';
+
+  @override
+  String get sfxFormatError => '不支持的音频格式，请使用 16 位 PCM 或 float32 WAV，时长不超过 2 秒。';
+
+  @override
+  String get sfxImportFailed => '保存自定义提示音失败。';
+
+  @override
+  String get poke => 'Poke';
+
+  @override
+  String get pokeHint => '输入要发送的提示消息';
+
+  @override
+  String get pokeSent => 'Poke 已发送';
+
+  @override
+  String get send => '发送';
+
+  @override
+  String get awayEnable => '标记离开';
+
+  @override
+  String get awayDisable => '恢复在线';
+
+  @override
   String get disconnected => '未连接';
 
   @override

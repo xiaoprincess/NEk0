@@ -98,6 +98,27 @@ typedef _SetMicGainDart = void Function(double);
 typedef _SetClientVolumeNative = Void Function(Uint16, Float);
 typedef _SetClientVolumeDart = void Function(int, double);
 
+// ts_set_sfx_sample(kind: u8, data: *const u8, len: usize) -> i32
+// Returns: 0 ok, 1 invalid kind, 2 unsupported format, 3 empty/too long.
+typedef _SetSfxSampleNative = Int32 Function(Uint8, Pointer<Uint8>, IntPtr);
+typedef _SetSfxSampleDart = int Function(int, Pointer<Uint8>, int);
+
+// ts_clear_sfx_sample(kind: u8) -> i32
+typedef _ClearSfxSampleNative = Int32 Function(Uint8);
+typedef _ClearSfxSampleDart = int Function(int);
+
+// ts_play_sfx(kind: u8) -> i32
+typedef _PlaySfxNative = Int32 Function(Uint8);
+typedef _PlaySfxDart = int Function(int);
+
+// ts_set_away(away: bool) -> bool
+typedef _SetAwayNative = Uint8 Function(Uint8);
+typedef _SetAwayDart = int Function(int);
+
+// ts_send_poke(client_id: u16, message: *const c_char) -> bool
+typedef _SendPokeNative = Uint8 Function(Uint16, Pointer<Utf8>);
+typedef _SendPokeDart = int Function(int, Pointer<Utf8>);
+
 // ─── Bindings ───────────────────────────────────────────────────────
 
 final _connect = _lib.lookupFunction<_ConnectNative, _ConnectDart>(
@@ -161,6 +182,23 @@ final _setClientVolume = _lib
     .lookupFunction<_SetClientVolumeNative, _SetClientVolumeDart>(
       'ts_set_client_volume',
     );
+final _setSfxSample = _lib
+    .lookupFunction<_SetSfxSampleNative, _SetSfxSampleDart>(
+      'ts_set_sfx_sample',
+    );
+final _clearSfxSample = _lib
+    .lookupFunction<_ClearSfxSampleNative, _ClearSfxSampleDart>(
+      'ts_clear_sfx_sample',
+    );
+final _playSfx = _lib.lookupFunction<_PlaySfxNative, _PlaySfxDart>(
+  'ts_play_sfx',
+);
+final _setAway = _lib.lookupFunction<_SetAwayNative, _SetAwayDart>(
+  'ts_set_away',
+);
+final _sendPoke = _lib.lookupFunction<_SendPokeNative, _SendPokeDart>(
+  'ts_send_poke',
+);
 
 // ─── Helper ─────────────────────────────────────────────────────────
 
@@ -301,6 +339,41 @@ class TsNative {
 
   static void setClientVolume(int clientId, double volumeDb) {
     _setClientVolume(clientId, volumeDb);
+  }
+
+  /// Install a custom WAV sample for an SFX kind (1..=25, see SfxKind).
+  /// Returns 0 on success; see the typedef above for error codes.
+  static int setSfxSample(int kind, Pointer<Uint8> data, int len) {
+    return _setSfxSample(kind, data, len);
+  }
+
+  /// Restore the built-in sample for an SFX kind. Returns 0 on success, 1
+  /// for an invalid kind.
+  static int clearSfxSample(int kind) {
+    return _clearSfxSample(kind);
+  }
+
+  /// Play the active sample for an SFX kind immediately (preview).
+  /// Returns 0 on success, 1 for an invalid kind.
+  static int playSfx(int kind) {
+    return _playSfx(kind);
+  }
+
+  /// Set our own away state (server echo drives the away sounds).
+  static bool setAway(bool away) {
+    debugLog('setAway($away)');
+    return _setAway(away ? 1 : 0) != 0;
+  }
+
+  /// Poke another client. Returns true when the request was queued.
+  static bool sendPoke(int clientId, String message) {
+    debugLog('sendPoke(client=$clientId, len=${message.length})');
+    final ptr = _strToPtr(message);
+    try {
+      return _sendPoke(clientId, ptr) != 0;
+    } finally {
+      malloc.free(ptr);
+    }
   }
 }
 

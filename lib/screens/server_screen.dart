@@ -351,6 +351,21 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
               size: 28,
             ),
           ),
+          const SizedBox(width: 24),
+          // --- Away toggle ---
+          Tooltip(
+            message: conn.away
+                ? AppLocalizations.of(context).awayDisable
+                : AppLocalizations.of(context).awayEnable,
+            child: GestureDetector(
+              onTap: () => notifier.toggleAway(),
+              child: Icon(
+                Icons.access_time,
+                color: conn.away ? Colors.amber : Colors.grey,
+                size: 28,
+              ),
+            ),
+          ),
           // --- PTT button (only in PTT mode) ---
           if (conn.pttMode) ...[
             const SizedBox(width: 24),
@@ -519,7 +534,71 @@ class _ClientVolumeSheetState extends State<_ClientVolumeSheet> {
               ),
             ],
           ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _showPokeDialog(context),
+                  icon: const Icon(Icons.notification_important, size: 18),
+                  label: Text(AppLocalizations.of(context).poke),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.blueAccent,
+                    side: const BorderSide(color: Color(0xFF2A2A4A)),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+
+  /// Ask for a poke message and send it to this client.
+  Future<void> _showPokeDialog(BuildContext context) async {
+    final al = AppLocalizations.of(context);
+    final controller = TextEditingController();
+    final msg = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: Text(
+          al.poke,
+          style: const TextStyle(color: Colors.white, fontSize: 18),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: al.pokeHint,
+            hintStyle: const TextStyle(color: Colors.grey),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(al.cancel, style: const TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: Text(
+              al.send,
+              style: const TextStyle(color: Colors.blueAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    final text = msg?.trim() ?? '';
+    if (text.isEmpty || !mounted) return;
+    widget.notifier.sendPoke(widget.client.id, text);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(al.pokeSent),
+        duration: const Duration(seconds: 2),
       ),
     );
   }

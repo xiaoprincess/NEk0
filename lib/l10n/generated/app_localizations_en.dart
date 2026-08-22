@@ -185,6 +185,187 @@ class AppLocalizationsEn extends AppLocalizations {
   String get micGain => 'Mic Gain';
 
   @override
+  String get channelSounds => 'Channel sounds';
+
+  @override
+  String get sfxGroupConnection => 'Connection';
+
+  @override
+  String get sfxGroupChannel => 'Channel';
+
+  @override
+  String get sfxGroupUsers => 'Other users';
+
+  @override
+  String get sfxGroupAboutYou => 'About you';
+
+  @override
+  String get sfxGroupChat => 'Chat';
+
+  @override
+  String get sfxGroupVoice => 'Voice';
+
+  @override
+  String get sfxGroupOther => 'Other';
+
+  @override
+  String get sfxChannelSwitched => 'You switched channels';
+
+  @override
+  String get sfxNeutralToCurrent => 'Someone switched into your channel';
+
+  @override
+  String get sfxNeutralAwayFromCurrent =>
+      'Someone switched away from your channel';
+
+  @override
+  String get sfxNeutralConnConnected => 'User connected to your channel';
+
+  @override
+  String get sfxNeutralConnDisconnected => 'User disconnected from the server';
+
+  @override
+  String get sfxNeutralConnConnectionLost => 'User connection lost (timeout)';
+
+  @override
+  String get sfxNeutralMovedToCurrent => 'User moved into your channel';
+
+  @override
+  String get sfxNeutralMovedAwayFromCurrent => 'User moved out of your channel';
+
+  @override
+  String get sfxNeutralKickedChannelToCurrent =>
+      'User kicked into your channel';
+
+  @override
+  String get sfxNeutralKickedChannelAwayFromCurrent =>
+      'User kicked out of your channel';
+
+  @override
+  String get sfxNeutralKickedServer => 'User kicked from the server';
+
+  @override
+  String get sfxNeutralBannedServer => 'User banned from the server';
+
+  @override
+  String get sfxNeutralRecordingStarted => 'User started recording';
+
+  @override
+  String get sfxNeutralRecordingStopped => 'User stopped recording';
+
+  @override
+  String get sfxNeutralRecordingActive => 'Recording active in channel';
+
+  @override
+  String get sfxYouWereMoved => 'You were moved';
+
+  @override
+  String get sfxYouKickedChannel => 'You were kicked from a channel';
+
+  @override
+  String get sfxYouKickedServer => 'You were kicked from the server';
+
+  @override
+  String get sfxYouWereBanned => 'You were banned';
+
+  @override
+  String get sfxYouWerePoked => 'You were poked';
+
+  @override
+  String get sfxChatInbound => 'Incoming message';
+
+  @override
+  String get sfxChatOutbound => 'Message sent';
+
+  @override
+  String get sfxConnected => 'Connected';
+
+  @override
+  String get sfxDisconnected => 'Disconnected';
+
+  @override
+  String get sfxConnectionLost => 'Connection lost';
+
+  @override
+  String get sfxError => 'Error';
+
+  @override
+  String get sfxMicActivated => 'Mic activated';
+
+  @override
+  String get sfxMicMuted => 'Mic muted';
+
+  @override
+  String get sfxSoundMuted => 'Sound muted';
+
+  @override
+  String get sfxSoundResumed => 'Sound resumed';
+
+  @override
+  String get sfxAwayActivated => 'Away activated';
+
+  @override
+  String get sfxAwayDeactivated => 'Away deactivated';
+
+  @override
+  String get sfxChannelCreated => 'Channel created';
+
+  @override
+  String get sfxChannelDeleted => 'Channel deleted';
+
+  @override
+  String get sfxChannelEdited => 'Channel edited';
+
+  @override
+  String get sfxChannelMoved => 'Channel moved';
+
+  @override
+  String get sfxChannelgroupChanged => 'Channel group changed';
+
+  @override
+  String get sfxDefault => 'Default';
+
+  @override
+  String get sfxPreview => 'Preview';
+
+  @override
+  String get sfxSelectWav => 'Select WAV';
+
+  @override
+  String get sfxReset => 'Restore default';
+
+  @override
+  String get sfxImported => 'Custom sound saved.';
+
+  @override
+  String get sfxTooLong => 'Audio is too long (maximum 2 seconds).';
+
+  @override
+  String get sfxFormatError =>
+      'Unsupported audio format. Use a PCM 16-bit or float32 WAV up to 2 seconds.';
+
+  @override
+  String get sfxImportFailed => 'Failed to save the custom sound.';
+
+  @override
+  String get poke => 'Poke';
+
+  @override
+  String get pokeHint => 'Message to send';
+
+  @override
+  String get pokeSent => 'Poke sent';
+
+  @override
+  String get send => 'Send';
+
+  @override
+  String get awayEnable => 'Set away';
+
+  @override
+  String get awayDisable => 'Back online';
+
+  @override
   String get disconnected => 'Disconnected';
 
   @override

@@ -30,6 +30,7 @@ class TsConnectionState {
   final bool voiceActive;
   final bool inputMuted;
   final bool outputMuted;
+  final bool away;
   final bool pttMode;
   final bool pttPressed;
   final bool vadEnabled;
@@ -52,6 +53,7 @@ class TsConnectionState {
     this.voiceActive = false,
     this.inputMuted = false,
     this.outputMuted = false,
+    this.away = false,
     this.pttMode = false,
     this.pttPressed = false,
     this.vadEnabled = true,
@@ -75,6 +77,7 @@ class TsConnectionState {
     bool? voiceActive,
     bool? inputMuted,
     bool? outputMuted,
+    bool? away,
     bool? pttMode,
     bool? pttPressed,
     bool? vadEnabled,
@@ -98,6 +101,7 @@ class TsConnectionState {
     voiceActive: voiceActive ?? this.voiceActive,
     inputMuted: inputMuted ?? this.inputMuted,
     outputMuted: outputMuted ?? this.outputMuted,
+    away: away ?? this.away,
     pttMode: pttMode ?? this.pttMode,
     pttPressed: pttPressed ?? this.pttPressed,
     vadEnabled: vadEnabled ?? this.vadEnabled,
@@ -537,6 +541,21 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     state = state.copyWith(outputMuted: newMuted);
     TsNative.setMuted(input: state.inputMuted, output: newMuted);
     _refreshNotification();
+  }
+
+  /// Toggle our own away state. The server echo drives the
+  /// away_activated/away_deactivated sounds via the Rust event loop.
+  void toggleAway() {
+    if (!state.connected) return;
+    final newAway = !state.away;
+    state = state.copyWith(away: newAway);
+    TsNative.setAway(newAway);
+  }
+
+  /// Poke another client (sends a notifyclientpoke request).
+  void sendPoke(int clientId, String message) {
+    if (!state.connected) return;
+    TsNative.sendPoke(clientId, message);
   }
 
   void setVadThreshold(double threshold) {
