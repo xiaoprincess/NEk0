@@ -51,6 +51,8 @@ pub enum TsEvent {
     Disconnected { reason: String },
     #[serde(rename = "text_message")]
     TextMessage { from_client: String, from_client_id: u32, target_mode: u8, message: String },
+    #[serde(rename = "poke")]
+    Poke { from_client: String, from_client_id: u32, message: String },
     #[serde(rename = "client_joined")]
     ClientJoined { client_id: u32, nickname: String, channel_id: u32 },
     #[serde(rename = "client_left")]

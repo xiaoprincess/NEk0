@@ -770,6 +770,18 @@ abstract class AppLocalizations {
   /// **'Poke sent'**
   String get pokeSent;
 
+  /// No description provided for @pokeNotificationTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'You were poked'**
+  String get pokeNotificationTitle;
+
+  /// No description provided for @pokeNotificationBody.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} poked you: {message}'**
+  String pokeNotificationBody(String name, String message);
+
   /// No description provided for @send.
   ///
   /// In en, this message translates to:

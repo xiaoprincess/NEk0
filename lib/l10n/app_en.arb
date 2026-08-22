@@ -123,6 +123,14 @@
   "poke": "Poke",
   "pokeHint": "Message to send",
   "pokeSent": "Poke sent",
+  "pokeNotificationTitle": "You were poked",
+  "pokeNotificationBody": "{name} poked you: {message}",
+  "@pokeNotificationBody": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "message": {"type": "String"}
+    }
+  },
   "send": "Send",
   "awayEnable": "Set away",
   "awayDisable": "Back online",

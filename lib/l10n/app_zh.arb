@@ -118,6 +118,14 @@
   "poke": "Poke",
   "pokeHint": "输入要发送的提示消息",
   "pokeSent": "Poke 已发送",
+  "pokeNotificationTitle": "你被戳了一下",
+  "pokeNotificationBody": "{name} 戳了你: {message}",
+  "@pokeNotificationBody": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "message": {"type": "String"}
+    }
+  },
   "send": "发送",
   "awayEnable": "标记离开",
   "awayDisable": "恢复在线",

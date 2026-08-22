@@ -105,4 +105,19 @@ class ForegroundService {
       return false;
     }
   }
+
+  /// Show a system notification for an incoming poke.
+  static Future<void> notifyPoke({
+    required String title,
+    required String body,
+  }) async {
+    try {
+      await _channel.invokeMethod('notify_poke', {
+        'title': title,
+        'body': body,
+      });
+    } catch (e) {
+      // Notifications are best-effort; never crash the poll loop.
+    }
+  }
 }

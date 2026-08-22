@@ -872,7 +872,7 @@ fn teardown_output_state() {
 /// the *active* sample (built-in or custom override) has finished playing,
 /// plus a 400ms margin. Custom samples are capped at 2s, so the stream is
 /// never held longer than ~2.4s. The deferred task re-checks `connected` so
-/// a fast reconnect does not tear down the new connection's buffers.
+/// a fast reconnection does not tear down the new connection's buffers.
 fn schedule_sfx_teardown(kind: u8) {
     let samples = crate::SFX_SAMPLES.load();
     let len = samples[(kind - 1) as usize]
@@ -886,6 +886,25 @@ fn schedule_sfx_teardown(kind: u8) {
     eprintln!("[sfx] kind={} queued, deferred teardown in {}ms", kind, play_ms);
     RUNTIME.spawn(async move {
         tokio::time::sleep(Duration::from_millis(play_ms)).await;
+        SFX_DEFERRED_TEARDOWN.store(false, Ordering::Relaxed);
+        if !STATE.lock().connected {
+            teardown_output_state();
+        }
+    });
+}
+
+/// A kick/ban sound is playing through the output stream and the server is
+/// closing the connection (SFX_SUPPRESS_DISCONNECT is set, so no
+/// "disconnected" sound must be queued on top). Keep the stream alive until
+/// the active sample finished, then tear it down. Custom samples are capped
+/// at 2s and built-in kick/ban samples are shorter, so 2.4s always lets the
+/// sound finish while staying bounded.
+fn schedule_teardown_after_kick_sfx() {
+    const PRESERVE_MS: u64 = 2400;
+    SFX_DEFERRED_TEARDOWN.store(true, Ordering::Relaxed);
+    eprintln!("[sfx] kick/ban sound playing, deferred teardown in {}ms", PRESERVE_MS);
+    RUNTIME.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(PRESERVE_MS)).await;
         SFX_DEFERRED_TEARDOWN.store(false, Ordering::Relaxed);
         if !STATE.lock().connected {
             teardown_output_state();
@@ -917,10 +936,12 @@ fn maybe_trigger_sfx(
         Some(id) => id,
         None => return,
     };
-    let own_channel = match own_channel {
-        Some(ch) => ch,
-        None => return,
-    };
+    // NOTE: own_channel must stay an Option — when our own client is removed
+    // from the view (kicked/banned), the batch snapshot has no entry for us,
+    // so book.clients.get(own_client) is None and own_channel is None. The
+    // own-client PropertyRemoved branch below still needs to fire the
+    // kick/ban sound; only the other-client branches require a channel.
+    let own_channel = own_channel;
 
     // Per-batch dedupe helper: only channel_edited / channel_moved need it
     // (one notify emits several PropertyChanged events).
@@ -952,7 +973,7 @@ fn maybe_trigger_sfx(
                     return;
                 }
                 match book.clients.get(cid) {
-                    Some(c) if c.channel == own_channel => {
+                    Some(c) if Some(c.channel) == own_channel => {
                         if !batch_handled.insert(*cid) {
                             return; // movement already accounted for this client
                         }
@@ -1029,14 +1050,14 @@ fn maybe_trigger_sfx(
                     // Other client moved between channels: classify by reason
                     // (None = self-switch, Moved = admin-moved, KickChannel =
                     // kicked from channel) against our own channel.
-                    if old_channel == own_channel && new_channel != own_channel {
+                    if Some(old_channel) == own_channel && Some(new_channel) != own_channel {
                         let sound = match extra.reason {
                             Some(Reason::KickChannel) => SFX_NEUTRAL_KICKED_CH_AWAY,
                             Some(Reason::Moved) => SFX_NEUTRAL_MOVED_AWAY,
                             _ => SFX_NEUTRAL_AWAY_FROM_CURRENT,
                         };
                         Some((sound, new_client.name.clone()))
-                    } else if old_channel != own_channel && new_channel == own_channel {
+                    } else if Some(old_channel) != own_channel && Some(new_channel) == own_channel {
                         let sound = match extra.reason {
                             Some(Reason::KickChannel) => SFX_NEUTRAL_KICKED_CH_TO_CURRENT,
                             Some(Reason::Moved) => SFX_NEUTRAL_MOVED_TO_CURRENT,
@@ -1054,7 +1075,7 @@ fn maybe_trigger_sfx(
                     Some(c) => c,
                     None => return,
                 };
-                if *cid == own_client || client.channel != own_channel {
+                if *cid == own_client || Some(client.channel) != own_channel {
                     return;
                 }
                 match old {
@@ -1167,6 +1188,10 @@ fn maybe_trigger_sfx(
                             Some((SFX_YOU_KICKED_CHANNEL, removed.name.clone()))
                         }
                         Some(Reason::KickServer) => {
+                            // Server closes the connection right after a
+                            // server kick — suppress the "disconnected" sound
+                            // so it does not stack on the kick sound.
+                            SFX_SUPPRESS_DISCONNECT.store(true, Ordering::Relaxed);
                             Some((SFX_YOU_KICKED_SERVER, removed.name.clone()))
                         }
                         Some(Reason::KickServerBan) => {
@@ -1175,7 +1200,7 @@ fn maybe_trigger_sfx(
                         }
                         _ => return,
                     }
-                } else if removed.channel != own_channel {
+                } else if Some(removed.channel) != own_channel {
                     // Not in our channel — no sound.
                     return;
                 } else {
@@ -1247,18 +1272,44 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                             invoker,
                             message,
                         } => {
-                            let target_mode = match target {
-                                tsclientlib::MessageTarget::Server => 3u8,
-                                tsclientlib::MessageTarget::Channel => 2u8,
-                                tsclientlib::MessageTarget::Client(_) => 1u8,
-                                tsclientlib::MessageTarget::Poke(_) => 0u8,
-                            };
-                            STATE.lock().pending_events.push_back(TsEvent::TextMessage {
-                                from_client: invoker.name.clone(),
-                                from_client_id: invoker.id.0 as u32,
-                                target_mode,
-                                message: message.clone(),
-                            });
+                            // A poke is a dedicated Message target
+                            // (notifyclientpoke) and must NOT show up in the
+                            // chat — it gets its own event (Dart shows a
+                            // system notification). Everything else is a text
+                            // message routed by target mode.
+                            match target {
+                                tsclientlib::MessageTarget::Poke(_) => {
+                                    STATE.lock().pending_events.push_back(TsEvent::Poke {
+                                        from_client: invoker.name.clone(),
+                                        from_client_id: invoker.id.0 as u32,
+                                        message: message.clone(),
+                                    });
+                                }
+                                tsclientlib::MessageTarget::Server => {
+                                    STATE.lock().pending_events.push_back(TsEvent::TextMessage {
+                                        from_client: invoker.name.clone(),
+                                        from_client_id: invoker.id.0 as u32,
+                                        target_mode: 3u8,
+                                        message: message.clone(),
+                                    });
+                                }
+                                tsclientlib::MessageTarget::Channel => {
+                                    STATE.lock().pending_events.push_back(TsEvent::TextMessage {
+                                        from_client: invoker.name.clone(),
+                                        from_client_id: invoker.id.0 as u32,
+                                        target_mode: 2u8,
+                                        message: message.clone(),
+                                    });
+                                }
+                                tsclientlib::MessageTarget::Client(_) => {
+                                    STATE.lock().pending_events.push_back(TsEvent::TextMessage {
+                                        from_client: invoker.name.clone(),
+                                        from_client_id: invoker.id.0 as u32,
+                                        target_mode: 1u8,
+                                        message: message.clone(),
+                                    });
+                                }
+                            }
                             if let Some(b) = book.as_ref() {
                                 maybe_trigger_sfx(ev, own_client, own_channel, b, &mut batch_fired, &mut batch_handled);
                             }
@@ -1343,6 +1394,13 @@ async fn event_loop(
             state.disconnect_requested
         };
         if do_disconnect {
+            // Queue the disconnected sound BEFORE the disconnect handshake:
+            // the library waits for the server's reply (disconnect ack /
+            // notifyclientleftview, up to 5s) before its events stream ends,
+            // so scheduling after the wait would delay — or on a dead link
+            // nearly lose — the sound. The deferred teardown task still
+            // tears the stream down once the sound finished playing.
+            schedule_sfx_teardown(SFX_DISCONNECTED);
             let _ = con.disconnect(DisconnectOptions::new());
             let _ = con.events().for_each(|_| future::ready(())).await;
             let current_gen = crate::CONNECTION_GENERATION.load(Ordering::SeqCst);
@@ -1355,9 +1413,6 @@ async fn event_loop(
                     });
                 STATE.lock().connected = false;
                 STATE.lock().disconnect_requested = false;
-                // Keep the output stream alive until the disconnect sound
-                // has finished playing; the deferred task tears it down.
-                schedule_sfx_teardown(SFX_DISCONNECTED);
                 *COMMAND_TX.lock() = None;
             }
             return;
@@ -1447,6 +1502,12 @@ async fn event_loop(
                         OutClientPokeRequestMessage::new(&mut std::iter::once(part)).send(&mut con);
                 }
                 Command::Disconnect => {
+                    // Queue the disconnected sound BEFORE the disconnect
+                    // handshake (see do_disconnect above: the library waits
+                    // for the server's disconnect ack before its events
+                    // stream ends). The deferred teardown task still tears
+                    // the stream down once the sound finished playing.
+                    schedule_sfx_teardown(SFX_DISCONNECTED);
                     let _ = con.disconnect(DisconnectOptions::new());
                     let _ = con.events().for_each(|_| future::ready(())).await;
                     let current_gen = crate::CONNECTION_GENERATION.load(Ordering::SeqCst);
@@ -1457,7 +1518,6 @@ async fn event_loop(
                         });
                         s.connected = false;
                         drop(s);
-                        schedule_sfx_teardown(SFX_DISCONNECTED);
                         *COMMAND_TX.lock() = None;
                     }
                     return;
@@ -1575,7 +1635,10 @@ async fn event_loop(
                     schedule_sfx_teardown(SFX_ERROR);
                     *COMMAND_TX.lock() = None;
                 }
-                break;
+                // The stream errored out (same termination as Ok(None)):
+                // return directly instead of falling into 2b, which would
+                // poll again and could play an extra sound.
+                return;
             }
             Ok(None) => {
                 eprintln!("event_loop: stream ended (server disconnect, gen={})", generation);
@@ -1588,22 +1651,36 @@ async fn event_loop(
                     });
                     drop(s);
                     if SFX_SUPPRESS_DISCONNECT.load(Ordering::Relaxed) {
-                        // Kicked/banned: the kick sound just played — do not
-                        // stack the disconnect sound on top of it.
+                        // Kicked/banned: the kick/ban sound just played — keep
+                        // the stream alive until it finished; do NOT play any
+                        // extra sound on top of it.
                         SFX_SUPPRESS_DISCONNECT.store(false, Ordering::Relaxed);
-                        teardown_output_state();
+                        schedule_teardown_after_kick_sfx();
                     } else {
-                        schedule_sfx_teardown(SFX_DISCONNECTED);
+                        // Passive disconnect (server closed / network lost):
+                        // play the connection_lost sound, not disconnected
+                        // (disconnected is reserved for explicit user exit).
+                        schedule_sfx_teardown(SFX_CONNECTION_LOST);
                     }
                     *COMMAND_TX.lock() = None;
                 }
-                break;
+                // The stream is truly over — do not fall through to the
+                // drain loop (2b), which would poll the finished stream again
+                // and re-enter this branch with SUPPRESS already cleared,
+                // producing a second sound.
+                return;
             }
             Err(_) => {} // 20ms timeout — continue
         }
 
         // 2b. Drain remaining already-available events (1ms timeout)
         let mut deferred_events: Vec<StreamItem> = Vec::new();
+        // Set when the events stream ends cleanly (Ok(None)). The actual
+        // finalization (sound decision, Disconnected event, teardown) runs
+        // AFTER 2c below, outside the `con.events()` borrow — the kicked/
+        // banned BookEvents must be processed first so SFX_SUPPRESS_DISCONNECT
+        // is up to date before we decide which sound (if any) to play.
+        let mut stream_ended = false;
         loop {
             match tokio::time::timeout(Duration::from_millis(1), con.events().next()).await {
                 Ok(Some(Ok(StreamItem::Audio(audio_buf)))) => {
@@ -1626,37 +1703,54 @@ async fn event_loop(
                         schedule_sfx_teardown(SFX_ERROR);
                         *COMMAND_TX.lock() = None;
                     }
-                    break;
+                    // The stream errored out — return immediately instead of
+                    // looping, so no extra sound is queued on top of the
+                    // error sound.
+                    return;
                 }
                 Ok(None) => {
-                    let current_gen = crate::CONNECTION_GENERATION.load(Ordering::SeqCst);
-                    if current_gen == generation {
-                        let mut s = STATE.lock();
-                        s.connected = false;
-                        s.pending_events.push_back(TsEvent::Disconnected {
-                            reason: "Connection closed by server".into(),
-                        });
-                        drop(s);
-                        if SFX_SUPPRESS_DISCONNECT.load(Ordering::Relaxed) {
-                            SFX_SUPPRESS_DISCONNECT.store(false, Ordering::Relaxed);
-                            teardown_output_state();
-                        } else {
-                            schedule_sfx_teardown(SFX_DISCONNECTED);
-                        }
-                        *COMMAND_TX.lock() = None;
-                    }
+                    stream_ended = true;
                     break;
                 }
                 Err(_) => break,
             }
         }
 
-        // 2c. Process deferred non-audio events
+        // 2c. Process deferred non-audio events. This runs after 2b so the
+        // `con.events()` borrow has been released.
         for item in deferred_events {
             handle_control_item(&item, &mut con, generation);
         }
         if let Some(item) = deferred {
             handle_control_item(&item, &mut con, generation);
+        }
+
+        // Stream ended cleanly: finalize. The deferred events above were
+        // already processed, so a kick/ban has set SFX_SUPPRESS_DISCONNECT
+        // and queued its own sound — play connection_lost only for a true
+        // passive disconnect (server closed / network lost).
+        if stream_ended {
+            let current_gen = crate::CONNECTION_GENERATION.load(Ordering::SeqCst);
+            if current_gen == generation {
+                let mut s = STATE.lock();
+                s.connected = false;
+                s.pending_events.push_back(TsEvent::Disconnected {
+                    reason: "Connection closed by server".into(),
+                });
+                drop(s);
+                if SFX_SUPPRESS_DISCONNECT.load(Ordering::Relaxed) {
+                    // Kicked/banned: keep the stream so the kick/ban sound
+                    // finishes; no extra sound on top.
+                    SFX_SUPPRESS_DISCONNECT.store(false, Ordering::Relaxed);
+                    schedule_teardown_after_kick_sfx();
+                } else {
+                    // Passive disconnect → connection_lost, not disconnected
+                    // (disconnected is reserved for explicit user exit).
+                    schedule_sfx_teardown(SFX_CONNECTION_LOST);
+                }
+                *COMMAND_TX.lock() = None;
+            }
+            return;
         }
 
     }
@@ -1982,13 +2076,16 @@ pub extern "C" fn ts_start_audio() -> u8 {
 pub extern "C" fn ts_stop_audio() {
     let mut state = STATE.lock();
     state.audio_encoder = None;
+    let disconnect_pending = state.disconnect_requested;
     drop(state);
-    if SFX_DEFERRED_TEARDOWN.load(Ordering::Relaxed) {
-        // A disconnect/error sound is still playing through the output
-        // stream (Dart calls this on the `disconnected` event, which fires
-        // right when the sound is queued). Leave the stream alone — the
-        // deferred teardown task drops it once the sample finished.
-        eprintln!("ts_stop_audio: deferred teardown pending, keeping stream");
+    if disconnect_pending || SFX_DEFERRED_TEARDOWN.load(Ordering::Relaxed) {
+        // A disconnect is in flight (ts_disconnect set the flag before the
+        // event loop queued the sfx) or a disconnect/error sound is still
+        // playing through the output stream (Dart calls this on the
+        // `disconnected` event, which fires right when the sound is queued).
+        // Leave the stream alone — the deferred teardown task drops it once
+        // the sample finished.
+        eprintln!("ts_stop_audio: teardown deferred (disconnect pending / sfx playing), keeping stream");
         return;
     }
     teardown_output_state();

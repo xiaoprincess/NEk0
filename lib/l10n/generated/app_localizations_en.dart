@@ -357,6 +357,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get pokeSent => 'Poke sent';
 
   @override
+  String get pokeNotificationTitle => 'You were poked';
+
+  @override
+  String pokeNotificationBody(String name, String message) {
+    return '$name poked you: $message';
+  }
+
+  @override
   String get send => 'Send';
 
   @override

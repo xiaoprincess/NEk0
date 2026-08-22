@@ -593,7 +593,9 @@ class _ClientVolumeSheetState extends State<_ClientVolumeSheet> {
     );
     controller.dispose();
     final text = msg?.trim() ?? '';
-    if (text.isEmpty || !mounted) return;
+    // An empty poke is allowed (TeamSpeak pokes without a message). Only
+    // skip when the widget is gone.
+    if (!mounted) return;
     widget.notifier.sendPoke(widget.client.id, text);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

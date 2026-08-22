@@ -1,11 +1,17 @@
 package com.senlinjun.nek0
 
+import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
+import android.app.PendingIntent
+import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
@@ -82,6 +88,12 @@ class MainActivity : FlutterActivity() {
                     "request_battery_optimization_exemption" -> {
                         result.success(requestBatteryOptimizationExemption())
                     }
+                    "notify_poke" -> {
+                        val title = call.argument<String>("title") ?: "Poke"
+                        val body = call.argument<String>("body") ?: ""
+                        showPokeNotification(title, body)
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -103,6 +115,56 @@ class MainActivity : FlutterActivity() {
             false
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /// Show a system notification for an incoming poke. Uses an
+    /// IMPORTANCE_HIGH channel so it pops up even in the background; falls
+    /// back to a default channel on very old platforms.
+    @SuppressLint("MissingPermission")
+    private fun showPokeNotification(title: String, body: String) {
+        try {
+            val pm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channelId = "teamspeak_poke"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId,
+                    "Pokes",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Incoming pokes"
+                }
+                pm.createNotificationChannel(channel)
+            }
+            val launchIntent = packageManager
+                .getLaunchIntentForPackage(packageName)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val contentIntent = PendingIntent.getActivity(this, 0, launchIntent, flags)
+            val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, channelId)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setSmallIcon(R.drawable.ic_stat_mic)
+                    .setAutoCancel(true)
+                    .setContentIntent(contentIntent)
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setSmallIcon(R.drawable.ic_stat_mic)
+                    .setAutoCancel(true)
+                    .setContentIntent(contentIntent)
+                    .build()
+            }
+            pm.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+        } catch (_: Exception) {
+            // Best-effort: a poke notification must never crash the app.
         }
     }
 

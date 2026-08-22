@@ -347,6 +347,19 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         state = state.copyWith(messages: [...state.messages, msg]);
         break;
 
+      case 'poke':
+        // A poke is NOT a chat message — show a system notification.
+        final from = event['from_client'] as String? ?? '';
+        final pokeMsg = event['message'] as String? ?? '';
+        final al = ref.read(localeProvider.notifier).localizations;
+        ForegroundService.notifyPoke(
+          title: al?.pokeNotificationTitle ?? 'You were poked',
+          body:
+              (al?.pokeNotificationBody(from, pokeMsg) ??
+              '$from poked you: $pokeMsg'),
+        );
+        break;
+
       case 'client_joined':
         final client = TsClient(
           id: event['client_id'] as int,
@@ -388,11 +401,14 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
   Future<void> disconnect() async {
     debugPrint('TS: disconnect called, connected=${state.connected}');
     if (!state.connected && !state.connecting) return;
+    // Ask Rust first: ts_disconnect sets the pending-disconnect flag
+    // synchronously, so ts_stop_audio below keeps the output stream alive
+    // until the "disconnected" sound finishes playing.
+    TsNative.disconnect(); // sends Command::Disconnect to event loop
     _audioService?.stop();
     _audioService = null;
     _micEnabled = false;
     ForegroundService.stop();
-    TsNative.disconnect(); // sends Command::Disconnect to event loop
     // Let the real 'disconnected' event from the event loop drive cleanup.
     // The poll timer keeps running — _handleEvent('disconnected') will
     // cancel it, reset state, and trigger the server_screen pop listener.

@@ -348,6 +348,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get pokeSent => 'Poke 已发送';
 
   @override
+  String get pokeNotificationTitle => '你被戳了一下';
+
+  @override
+  String pokeNotificationBody(String name, String message) {
+    return '$name 戳了你: $message';
+  }
+
+  @override
   String get send => '发送';
 
   @override
