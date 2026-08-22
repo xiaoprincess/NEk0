@@ -71,9 +71,11 @@ class ClientList extends StatelessWidget {
   }
 
   IconData _clientIcon(TsClient client) {
+    // Away wins over mute icons: an away client shows the clock, not a
+    // muted-mic/headset icon (away implies the mic is off anyway).
+    if (client.away) return Icons.access_time;
     if (client.outputMuted) return Icons.headset_off;
     if (client.inputMuted) return Icons.mic_off;
-    if (client.away) return Icons.access_time;
     return Icons.person;
   }
 

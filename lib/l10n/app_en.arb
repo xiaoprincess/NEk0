@@ -30,8 +30,6 @@
   "chat": "Chat",
   "guideMicTitle": "Mic",
   "guideMicDesc": "Tap to mute your mic. Long-press for voice settings (VAD, PTT, mic gain).",
-  "guideHeadsetTitle": "Headset",
-  "guideHeadsetDesc": "Full mute: silences your mic and the audio of everyone else. The media card play/pause does the same.",
   "guideSpeakerTitle": "Speaker",
   "guideSpeakerDesc": "Mute everyone's audio (output).",
   "guideChatTitle": "Chat",

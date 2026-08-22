@@ -82,13 +82,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Tap to mute your mic. Long-press for voice settings (VAD, PTT, mic gain).';
 
   @override
-  String get guideHeadsetTitle => 'Headset';
-
-  @override
-  String get guideHeadsetDesc =>
-      'Full mute: silences your mic and the audio of everyone else. The media card play/pause does the same.';
-
-  @override
   String get guideSpeakerTitle => 'Speaker';
 
   @override

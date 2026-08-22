@@ -136,6 +136,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
   bool _micEnabled = false;
   bool _micGranted =
       false; // true only after enableMic() successfully completes
+  bool _inputMutedBeforeAway = false; // input mute to restore when leaving away
   SharedPreferences? _prefs; // cached for synchronous saves
 
   @override
@@ -146,7 +147,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         toggleInputMute();
       }
     };
-    ForegroundService.onSetFullMute = setFullMute;
+    ForegroundService.onSetAwayMute = setAwayAndFullMute;
     ForegroundService.onNotificationDisconnect = () {
       disconnect();
     };
@@ -154,7 +155,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     ref.onDispose(() {
       _pollTimer?.cancel();
       ForegroundService.onToggleMute = null;
-      ForegroundService.onSetFullMute = null;
+      ForegroundService.onSetAwayMute = null;
       ForegroundService.onNotificationDisconnect = null;
     });
     return const TsConnectionState();
@@ -488,8 +489,9 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     );
   }
 
-  /// Diagram: Start -> PTT? -> pushed? -> send : mute? -> send : nothing
+  /// Diagram: Start -> away? -> nothing : PTT? -> pushed? -> send : mute? -> send : nothing
   bool get _shouldMicBeActive {
+    if (state.away) return false;
     if (state.pttMode) return state.pttPressed;
     return !state.inputMuted;
   }
@@ -538,18 +540,17 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     _refreshNotification();
   }
 
-  /// Full mute: input + output muted and mic capture stopped. Idempotent —
-  /// safe to call repeatedly (e.g. from the media card play/pause buttons).
-  void setFullMute(bool muted) {
-    if (state.inputMuted == muted && state.outputMuted == muted) return;
-    state = state.copyWith(inputMuted: muted, outputMuted: muted);
+  /// Media card control: pause = away + full mute (sound off), play =
+  /// away off + sound on. This replaces the removed headset full-mute toggle;
+  /// it is invoked via the platform channel from the Android media card
+  /// (KeepAliveService onPause/onPlay).
+  void setAwayAndFullMute(bool away, bool muted) {
+    _inputMutedBeforeAway = state.inputMuted;
+    state = state.copyWith(away: away, inputMuted: muted, outputMuted: muted);
+    TsNative.setAway(away);
     TsNative.setMuted(input: muted, output: muted);
     _updateMicState();
     _refreshNotification();
-  }
-
-  void toggleFullMute() {
-    setFullMute(!(state.inputMuted && state.outputMuted));
   }
 
   void toggleOutputMute() {
@@ -559,13 +560,20 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     _refreshNotification();
   }
 
-  /// Toggle our own away state. The server echo drives the
+  /// Toggle our own away state. Entering away auto-mutes the mic (input) and
+  /// stops capture; leaving away restores the input-mute state from before.
+  /// Output is not touched by the manual toggle. The server echo drives the
   /// away_activated/away_deactivated sounds via the Rust event loop.
   void toggleAway() {
     if (!state.connected) return;
     final newAway = !state.away;
-    state = state.copyWith(away: newAway);
+    final newInputMuted = newAway ? true : _inputMutedBeforeAway;
+    if (newAway) _inputMutedBeforeAway = state.inputMuted;
+    state = state.copyWith(away: newAway, inputMuted: newInputMuted);
     TsNative.setAway(newAway);
+    TsNative.setMuted(input: newInputMuted, output: state.outputMuted);
+    _updateMicState();
+    _refreshNotification();
   }
 
   /// Poke another client (sends a notifyclientpoke request).

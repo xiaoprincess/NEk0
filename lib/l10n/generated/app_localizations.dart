@@ -236,18 +236,6 @@ abstract class AppLocalizations {
   /// **'Tap to mute your mic. Long-press for voice settings (VAD, PTT, mic gain).'**
   String get guideMicDesc;
 
-  /// No description provided for @guideHeadsetTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Headset'**
-  String get guideHeadsetTitle;
-
-  /// No description provided for @guideHeadsetDesc.
-  ///
-  /// In en, this message translates to:
-  /// **'Full mute: silences your mic and the audio of everyone else. The media card play/pause does the same.'**
-  String get guideHeadsetDesc;
-
   /// No description provided for @guideSpeakerTitle.
   ///
   /// In en, this message translates to:

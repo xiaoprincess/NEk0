@@ -249,19 +249,19 @@ class KeepAliveService : Service() {
         mediaSession = MediaSession(this, "NEk0").apply {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
-                    // Media card "play" = restore: unmute input+output, mic on.
+                    // Media card "play" = away off + sound on (unmute input+output).
                     mediaSession?.setPlaybackState(
                         buildPlaybackState(PlaybackState.STATE_PLAYING)
                     )
-                    invokeDart("set_full_mute", mapOf("muted" to false))
+                    invokeDart("set_away_full_mute", mapOf("away" to false, "muted" to false))
                 }
 
                 override fun onPause() {
-                    // Media card "pause" = full mute: input+output muted, mic off.
+                    // Media card "pause" = away + sound off (input+output muted, mic off).
                     mediaSession?.setPlaybackState(
                         buildPlaybackState(PlaybackState.STATE_PAUSED)
                     )
-                    invokeDart("set_full_mute", mapOf("muted" to true))
+                    invokeDart("set_away_full_mute", mapOf("away" to true, "muted" to true))
                 }
             })
             setPlaybackState(buildPlaybackState(PlaybackState.STATE_PLAYING))
