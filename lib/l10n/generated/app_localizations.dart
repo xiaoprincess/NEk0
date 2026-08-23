@@ -260,6 +260,18 @@ abstract class AppLocalizations {
   /// **'Tap the chat bar to send messages in your channel.'**
   String get guideChatDesc;
 
+  /// No description provided for @guideUsersTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'User list'**
+  String get guideUsersTitle;
+
+  /// No description provided for @guideUsersDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap another user to adjust their volume or poke them. Tap your own name to open the same voice settings as long-pressing the mic.'**
+  String get guideUsersDesc;
+
   /// No description provided for @keepAliveTitle.
   ///
   /// In en, this message translates to:

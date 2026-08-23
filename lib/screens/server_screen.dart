@@ -28,14 +28,11 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
   final GlobalKey _micKey = GlobalKey();
   final GlobalKey _speakerKey = GlobalKey();
   final GlobalKey _chatKey = GlobalKey();
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAutoShowGuide());
-  }
+  final GlobalKey _usersKey = GlobalKey();
 
   /// Show the control-bar guide the first time the server screen is opened.
+  /// Deferred to the first successful connect (see [_onConnected]) so the
+  /// user-list step has a real target instead of the connecting spinner.
   Future<void> _maybeAutoShowGuide() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool('tour_server_shown') ?? false) return;
@@ -44,8 +41,18 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     await _showGuide();
   }
 
+  /// Runs right after the first successful connect: shows the OEM
+  /// battery/auto-start guide first, then the spotlight tour (which now
+  /// includes the user-list step, only meaningful once the roster exists).
+  Future<void> _onConnected() async {
+    await _maybeShowOemGuide();
+    if (!mounted) return;
+    await _maybeAutoShowGuide();
+  }
+
   Future<void> _showGuide() async {
     final al = AppLocalizations.of(context);
+    final connected = ref.read(tsConnectionProvider).connected;
     await showSpotlightTour(context, [
       TourStep(
         targetKey: _micKey,
@@ -65,6 +72,15 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
         title: al.guideChatTitle,
         description: al.guideChatDesc,
       ),
+      // The user-list step needs the roster rendered, which only exists
+      // while connected.
+      if (connected)
+        TourStep(
+          targetKey: _usersKey,
+          padding: 4,
+          title: al.guideUsersTitle,
+          description: al.guideUsersDesc,
+        ),
     ]);
   }
 
@@ -75,7 +91,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
       if (prev == false && next && mounted) {
-        _maybeShowOemGuide();
+        _onConnected();
       }
     });
     // Pop on connect failure (connecting finished without success)
@@ -149,6 +165,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
           ),
           const Divider(height: 1, color: Color(0xFF2A2A4A)),
           Container(
+            key: _usersKey,
             padding: const EdgeInsets.all(8),
             color: const Color(0xFF16213E),
             width: double.infinity,
@@ -169,7 +186,16 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
               child: ClientList(
                 clients: conn.clients,
                 currentChannelId: conn.selectedChannelId!,
-                onClientTap: (clientId) => _showClientVolume(clientId),
+                // Tapping yourself opens the same voice settings as
+                // long-pressing the mic; tapping others opens their
+                // per-client volume + poke sheet.
+                onClientTap: (clientId) {
+                  if (clientId == conn.ownClientId) {
+                    _showVoiceSettings(conn, notifier);
+                  } else {
+                    _showClientVolume(clientId);
+                  }
+                },
               ),
             ),
         ],

@@ -34,6 +34,8 @@
   "guideSpeakerDesc": "Mute everyone's audio (output).",
   "guideChatTitle": "Chat",
   "guideChatDesc": "Tap the chat bar to send messages in your channel.",
+  "guideUsersTitle": "User list",
+  "guideUsersDesc": "Tap another user to adjust their volume or poke them. Tap your own name to open the same voice settings as long-pressing the mic.",
   "keepAliveTitle": "Background Keep-Alive",
   "keepAliveBody": "To stay online in the background like a music player, allow NEk0 to run in the background in system settings:\n\u2022 Battery \u2192 ignore battery optimizations (we will open it)\n\u2022 Auto-start: allow NEk0 to auto-start\n\u2022 Background power management: allow background running",
   "talking": "Talking",

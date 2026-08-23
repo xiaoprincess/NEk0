@@ -95,6 +95,13 @@ class AppLocalizationsEn extends AppLocalizations {
       'Tap the chat bar to send messages in your channel.';
 
   @override
+  String get guideUsersTitle => 'User list';
+
+  @override
+  String get guideUsersDesc =>
+      'Tap another user to adjust their volume or poke them. Tap your own name to open the same voice settings as long-pressing the mic.';
+
+  @override
   String get keepAliveTitle => 'Background Keep-Alive';
 
   @override

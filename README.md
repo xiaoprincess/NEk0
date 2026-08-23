@@ -25,7 +25,8 @@
 - **First-use guide** — interactive spotlight coach marks on the real UI
   (re-viewable from the help icons)
 - **Voice settings** — VAD / PTT / mic gain / threshold tuning from the settings
-  screen or by long-pressing the mic button, with a live mic level + mic test
+  screen, by long-pressing the mic button, or by tapping your own name in the
+  user list, with a live mic level + mic test
 - **OTA updates** — checks GitHub/Gitee releases (tag format `vx.y.z`) on launch,
   downloads the ABI-matched APK and installs it; check can be disabled and the
   source chosen in settings

@@ -92,6 +92,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get guideChatDesc => '点击聊天栏向当前频道发送消息。';
 
   @override
+  String get guideUsersTitle => '用户列表';
+
+  @override
+  String get guideUsersDesc => '点击其他用户可调节音量或发送 Poke；点击自己的名字会打开与长按麦克风相同的语音设置。';
+
+  @override
   String get keepAliveTitle => '后台保活';
 
   @override
