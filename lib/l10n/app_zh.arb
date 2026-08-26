@@ -145,6 +145,13 @@
   "channelOptional": "频道（可选）",
   "passwordOptional": "密码（可选）",
   "teamSpeakUserDefault": "TeamSpeakUser",
+  "ports": "端口",
+  "portsHint": "留空使用默认值（语音 9987、ServerQuery 10011、文件传输 30033、SSH 10022）。",
+  "voicePort": "语音端口",
+  "serverQueryPort": "ServerQuery 端口",
+  "fileTransferPort": "文件传输端口",
+  "serverQuerySshPort": "ServerQuery SSH 端口",
+  "invalidPort": "端口必须是 1 到 65535 之间的数字。",
 
   "updateAvailable": "发现新版本",
   "updateAvailableBody": "NEk0 {version} 已发布。\n\n立即下载并安装？",

@@ -404,6 +404,28 @@ class AppLocalizationsZh extends AppLocalizations {
   String get teamSpeakUserDefault => 'TeamSpeakUser';
 
   @override
+  String get ports => '端口';
+
+  @override
+  String get portsHint =>
+      '留空使用默认值（语音 9987、ServerQuery 10011、文件传输 30033、SSH 10022）。';
+
+  @override
+  String get voicePort => '语音端口';
+
+  @override
+  String get serverQueryPort => 'ServerQuery 端口';
+
+  @override
+  String get fileTransferPort => '文件传输端口';
+
+  @override
+  String get serverQuerySshPort => 'ServerQuery SSH 端口';
+
+  @override
+  String get invalidPort => '端口必须是 1 到 65535 之间的数字。';
+
+  @override
   String get updateAvailable => '发现新版本';
 
   @override

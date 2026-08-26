@@ -413,6 +413,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get teamSpeakUserDefault => 'TeamSpeakUser';
 
   @override
+  String get ports => 'Ports';
+
+  @override
+  String get portsHint =>
+      'Leave empty to use the defaults (voice 9987, ServerQuery 10011, file transfer 30033, SSH 10022).';
+
+  @override
+  String get voicePort => 'Voice port';
+
+  @override
+  String get serverQueryPort => 'ServerQuery port';
+
+  @override
+  String get fileTransferPort => 'File transfer port';
+
+  @override
+  String get serverQuerySshPort => 'ServerQuery SSH port';
+
+  @override
+  String get invalidPort => 'Ports must be numbers between 1 and 65535.';
+
+  @override
   String get updateAvailable => 'Update available';
 
   @override

@@ -150,6 +150,13 @@
   "channelOptional": "Channel (optional)",
   "passwordOptional": "Password (optional)",
   "teamSpeakUserDefault": "TeamSpeakUser",
+  "ports": "Ports",
+  "portsHint": "Leave empty to use the defaults (voice 9987, ServerQuery 10011, file transfer 30033, SSH 10022).",
+  "voicePort": "Voice port",
+  "serverQueryPort": "ServerQuery port",
+  "fileTransferPort": "File transfer port",
+  "serverQuerySshPort": "ServerQuery SSH port",
+  "invalidPort": "Ports must be numbers between 1 and 65535.",
 
   "updateAvailable": "Update available",
   "updateAvailableBody": "NEk0 {version} is available.\n\nDownload and install it now?",

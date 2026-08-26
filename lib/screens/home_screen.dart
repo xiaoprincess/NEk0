@@ -249,7 +249,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   ) async {
     final conn = ref.read(tsConnectionProvider.notifier);
     await conn.connect(
-      address: server.address,
+      address: server.connectAddress,
       nickname: server.nickname,
       channel: server.channel,
       password: server.password,

@@ -20,6 +20,14 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
   late TextEditingController _channelCtrl;
   late TextEditingController _passwordCtrl;
 
+  late TextEditingController _voicePortCtrl;
+  late TextEditingController _serverQueryPortCtrl;
+  late TextEditingController _fileTransferPortCtrl;
+  late TextEditingController _serverQuerySshPortCtrl;
+
+  bool _portsExpanded = false;
+  String? _portError;
+
   @override
   void initState() {
     super.initState();
@@ -29,6 +37,18 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
     _nicknameCtrl = TextEditingController(text: s?.nickname ?? 'TeamSpeakUser');
     _channelCtrl = TextEditingController(text: s?.channel ?? '');
     _passwordCtrl = TextEditingController(text: s?.password ?? '');
+    _voicePortCtrl = TextEditingController(
+      text: s?.voicePort?.toString() ?? '',
+    );
+    _serverQueryPortCtrl = TextEditingController(
+      text: s?.serverQueryPort?.toString() ?? '',
+    );
+    _fileTransferPortCtrl = TextEditingController(
+      text: s?.fileTransferPort?.toString() ?? '',
+    );
+    _serverQuerySshPortCtrl = TextEditingController(
+      text: s?.serverQuerySshPort?.toString() ?? '',
+    );
   }
 
   @override
@@ -38,12 +58,46 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
     _nicknameCtrl.dispose();
     _channelCtrl.dispose();
     _passwordCtrl.dispose();
+    _voicePortCtrl.dispose();
+    _serverQueryPortCtrl.dispose();
+    _fileTransferPortCtrl.dispose();
+    _serverQuerySshPortCtrl.dispose();
     super.dispose();
+  }
+
+  /// Parse a port field, returning null when empty. Throws [FormatException]
+  /// when the content is not a valid port number in 1..65535.
+  int? _parsePort(TextEditingController ctrl) {
+    final text = ctrl.text.trim();
+    if (text.isEmpty) return null;
+    final value = int.tryParse(text);
+    if (value == null || value < 1 || value > 65535) {
+      throw const FormatException('invalid port');
+    }
+    return value;
   }
 
   void _submit() {
     final address = _addressCtrl.text.trim();
     if (address.isEmpty) return;
+
+    int? voicePort;
+    int? serverQueryPort;
+    int? fileTransferPort;
+    int? serverQuerySshPort;
+    try {
+      voicePort = _parsePort(_voicePortCtrl);
+      serverQueryPort = _parsePort(_serverQueryPortCtrl);
+      fileTransferPort = _parsePort(_fileTransferPortCtrl);
+      serverQuerySshPort = _parsePort(_serverQuerySshPortCtrl);
+    } on FormatException {
+      setState(() {
+        _portsExpanded = true;
+        _portError = AppLocalizations.of(context).invalidPort;
+      });
+      return;
+    }
+    setState(() => _portError = null);
 
     final server = Server(
       id: widget.existing?.id ?? const Uuid().v4(),
@@ -58,6 +112,10 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
       password: _passwordCtrl.text.trim().isEmpty
           ? null
           : _passwordCtrl.text.trim(),
+      voicePort: voicePort,
+      serverQueryPort: serverQueryPort,
+      fileTransferPort: fileTransferPort,
+      serverQuerySshPort: serverQuerySshPort,
     );
 
     Navigator.of(context).pop(server);
@@ -65,45 +123,30 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final al = AppLocalizations.of(context);
     return AlertDialog(
       backgroundColor: const Color(0xFF1A1A2E),
       title: Text(
-        widget.existing != null
-            ? AppLocalizations.of(context).editServerTitle
-            : AppLocalizations.of(context).addServerTitle,
+        widget.existing != null ? al.editServerTitle : al.addServerTitle,
         style: const TextStyle(color: Colors.white),
       ),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _field(
-              _nameCtrl,
-              AppLocalizations.of(context).serverName,
-              Icons.label,
-            ),
+            _field(_nameCtrl, al.serverName, Icons.label),
             const SizedBox(height: 12),
-            _field(
-              _addressCtrl,
-              AppLocalizations.of(context).addressHint,
-              Icons.dns,
-            ),
+            _field(_addressCtrl, al.addressHint, Icons.dns),
             const SizedBox(height: 12),
-            _field(
-              _nicknameCtrl,
-              AppLocalizations.of(context).nickname,
-              Icons.person,
-            ),
+            _buildPortsSection(al),
             const SizedBox(height: 12),
-            _field(
-              _channelCtrl,
-              AppLocalizations.of(context).channelOptional,
-              Icons.tag,
-            ),
+            _field(_nicknameCtrl, al.nickname, Icons.person),
+            const SizedBox(height: 12),
+            _field(_channelCtrl, al.channelOptional, Icons.tag),
             const SizedBox(height: 12),
             _field(
               _passwordCtrl,
-              AppLocalizations.of(context).passwordOptional,
+              al.passwordOptional,
               Icons.lock,
               obscure: true,
             ),
@@ -127,15 +170,103 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
     );
   }
 
+  /// Expandable "Ports" section: a collapsible header row that reveals the
+  /// TeamSpeak 3 server port inputs when tapped.
+  Widget _buildPortsSection(AppLocalizations al) {
+    final voice = _voicePortCtrl.text.trim().isNotEmpty
+        ? _voicePortCtrl.text.trim()
+        : ServerPorts.voice.toString();
+    return Column(
+      children: [
+        InkWell(
+          onTap: () => setState(() {
+            _portsExpanded = !_portsExpanded;
+            _portError = null;
+          }),
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16213E),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.lan, color: Colors.grey, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    al.ports,
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                  ),
+                ),
+                Text(
+                  voice,
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                Icon(
+                  _portsExpanded ? Icons.expand_less : Icons.expand_more,
+                  color: Colors.grey,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_portsExpanded) ...[
+          const SizedBox(height: 12),
+          _field(
+            _voicePortCtrl,
+            '${al.voicePort} (${ServerPorts.voice})',
+            Icons.mic,
+            number: true,
+          ),
+          const SizedBox(height: 12),
+          _field(
+            _serverQueryPortCtrl,
+            '${al.serverQueryPort} (${ServerPorts.serverQuery})',
+            Icons.tune,
+            number: true,
+          ),
+          const SizedBox(height: 12),
+          _field(
+            _fileTransferPortCtrl,
+            '${al.fileTransferPort} (${ServerPorts.fileTransfer})',
+            Icons.folder_open,
+            number: true,
+          ),
+          const SizedBox(height: 12),
+          _field(
+            _serverQuerySshPortCtrl,
+            '${al.serverQuerySshPort} (${ServerPorts.serverQuerySsh})',
+            Icons.terminal,
+            number: true,
+          ),
+          if (_portError != null) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                _portError!,
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+              ),
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+
   Widget _field(
     TextEditingController ctrl,
     String hint,
     IconData icon, {
     bool obscure = false,
+    bool number = false,
   }) {
     return TextField(
       controller: ctrl,
       obscureText: obscure,
+      keyboardType: number ? TextInputType.number : null,
       style: const TextStyle(color: Colors.white, fontSize: 14),
       decoration: InputDecoration(
         hintText: hint,

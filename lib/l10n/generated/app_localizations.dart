@@ -878,6 +878,48 @@ abstract class AppLocalizations {
   /// **'TeamSpeakUser'**
   String get teamSpeakUserDefault;
 
+  /// No description provided for @ports.
+  ///
+  /// In en, this message translates to:
+  /// **'Ports'**
+  String get ports;
+
+  /// No description provided for @portsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave empty to use the defaults (voice 9987, ServerQuery 10011, file transfer 30033, SSH 10022).'**
+  String get portsHint;
+
+  /// No description provided for @voicePort.
+  ///
+  /// In en, this message translates to:
+  /// **'Voice port'**
+  String get voicePort;
+
+  /// No description provided for @serverQueryPort.
+  ///
+  /// In en, this message translates to:
+  /// **'ServerQuery port'**
+  String get serverQueryPort;
+
+  /// No description provided for @fileTransferPort.
+  ///
+  /// In en, this message translates to:
+  /// **'File transfer port'**
+  String get fileTransferPort;
+
+  /// No description provided for @serverQuerySshPort.
+  ///
+  /// In en, this message translates to:
+  /// **'ServerQuery SSH port'**
+  String get serverQuerySshPort;
+
+  /// No description provided for @invalidPort.
+  ///
+  /// In en, this message translates to:
+  /// **'Ports must be numbers between 1 and 65535.'**
+  String get invalidPort;
+
   /// No description provided for @updateAvailable.
   ///
   /// In en, this message translates to:
