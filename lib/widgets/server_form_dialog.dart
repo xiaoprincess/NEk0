@@ -24,6 +24,7 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
   late TextEditingController _serverQueryPortCtrl;
   late TextEditingController _fileTransferPortCtrl;
   late TextEditingController _serverQuerySshPortCtrl;
+  late TextEditingController _portsHeaderCtrl;
 
   bool _portsExpanded = false;
   String? _portError;
@@ -49,6 +50,7 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
     _serverQuerySshPortCtrl = TextEditingController(
       text: s?.serverQuerySshPort?.toString() ?? '',
     );
+    _portsHeaderCtrl = TextEditingController();
   }
 
   @override
@@ -62,6 +64,7 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
     _serverQueryPortCtrl.dispose();
     _fileTransferPortCtrl.dispose();
     _serverQuerySshPortCtrl.dispose();
+    _portsHeaderCtrl.dispose();
     super.dispose();
   }
 
@@ -173,44 +176,23 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
   /// Expandable "Ports" section: a collapsible header row that reveals the
   /// TeamSpeak 3 server port inputs when tapped.
   Widget _buildPortsSection(AppLocalizations al) {
-    final voice = _voicePortCtrl.text.trim().isNotEmpty
-        ? _voicePortCtrl.text.trim()
-        : ServerPorts.voice.toString();
     return Column(
       children: [
-        InkWell(
+        // Header is a read-only field reusing the exact input-field layout so
+        // its height and prefix-icon align with the other text boxes.
+        _field(
+          _portsHeaderCtrl,
+          al.ports,
+          Icons.lan,
+          readOnly: true,
+          suffixIcon: Icon(
+            _portsExpanded ? Icons.expand_less : Icons.expand_more,
+            color: Colors.grey,
+          ),
           onTap: () => setState(() {
             _portsExpanded = !_portsExpanded;
             _portError = null;
           }),
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF16213E),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.lan, color: Colors.grey, size: 18),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    al.ports,
-                    style: const TextStyle(color: Colors.white, fontSize: 14),
-                  ),
-                ),
-                Text(
-                  voice,
-                  style: const TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-                Icon(
-                  _portsExpanded ? Icons.expand_less : Icons.expand_more,
-                  color: Colors.grey,
-                ),
-              ],
-            ),
-          ),
         ),
         if (_portsExpanded) ...[
           const SizedBox(height: 12),
@@ -262,16 +244,25 @@ class _ServerFormDialogState extends State<ServerFormDialog> {
     IconData icon, {
     bool obscure = false,
     bool number = false,
+    bool readOnly = false,
+    Widget? suffixIcon,
+    VoidCallback? onTap,
   }) {
     return TextField(
       controller: ctrl,
       obscureText: obscure,
+      readOnly: readOnly,
+      onTap: onTap,
       keyboardType: number ? TextInputType.number : null,
       style: const TextStyle(color: Colors.white, fontSize: 14),
       decoration: InputDecoration(
         hintText: hint,
+        // Keep the hint on a single line so every field renders at the same
+        // height even when the hint text is long (e.g. the port fields).
+        hintMaxLines: 1,
         hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
         prefixIcon: Icon(icon, color: Colors.grey, size: 18),
+        suffixIcon: suffixIcon,
         filled: true,
         fillColor: const Color(0xFF16213E),
         border: OutlineInputBorder(

@@ -985,6 +985,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No channels'**
   String get noChannels;
+
+  /// No description provided for @ok.
+  ///
+  /// In en, this message translates to:
+  /// **'OK'**
+  String get ok;
+
+  /// No description provided for @channelPasswordTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter channel password'**
+  String get channelPasswordTitle;
+
+  /// No description provided for @channelPasswordHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Password'**
+  String get channelPasswordHint;
+
+  /// No description provided for @channelPasswordWrong.
+  ///
+  /// In en, this message translates to:
+  /// **'Wrong channel password'**
+  String get channelPasswordWrong;
 }
 
 class _AppLocalizationsDelegate

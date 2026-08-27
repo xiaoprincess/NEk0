@@ -1382,6 +1382,41 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                             message: p.message.clone(),
                         });
                     }
+                } else if let InMessage::CommandError(err) = msg {
+                    // Our commands carry no return_code, so server rejections
+                    // arrive here as bare error messages instead of results.
+                    // Attribute an invalid-channel-password rejection to the
+                    // most recent clientmove within a short time window; all
+                    // other errors are logged as diagnostics.
+                    for entry in err.iter() {
+                        if entry.id == tsclientlib::TsError::ChannelInvalidPassword {
+                            const MOVE_WINDOW: Duration = Duration::from_secs(5);
+                            // Take the pending move as an owned value FIRST so
+                            // the STATE guard is dropped before pushing the
+                            // event below. A match whose scrutinee held the
+                            // guard must never re-lock STATE in its arms —
+                            // parking_lot would self-deadlock the connection
+                            // loop (and freeze the UI thread polling events).
+                            let pending = STATE.lock().pending_move.take();
+                            match pending {
+                                Some((cid, at)) if at.elapsed() <= MOVE_WINDOW => {
+                                    STATE.lock().pending_events.push_back(TsEvent::MoveRejected {
+                                        channel_id: cid as u32,
+                                    });
+                                }
+                                Some(_) => {
+                                    push_diag("channel-password rejection is stale, dropped");
+                                }
+                                None => {
+                                    push_diag(
+                                        "server rejected a command: invalid channel password",
+                                    );
+                                }
+                            }
+                        } else {
+                            push_diag(&format!("server rejected command: {:?}", entry.id));
+                        }
+                    }
                 }
             }
             StreamItem::DisconnectedTemporarily(r) => {
@@ -1480,11 +1515,22 @@ async fn event_loop(
                 Command::MoveChannel {
                     client_id,
                     channel_id,
+                    password,
                 } => {
+                    // Mark the move so a server rejection (which arrives
+                    // without a return_code) can be attributed back to this
+                    // request — see the CommandError handling below.
+                    STATE.lock().pending_move = Some((channel_id, Instant::now()));
+                    // TS3 expects cpw as base64(sha1(password)); never send
+                    // plaintext over the wire.
+                    let channel_password = password
+                        .as_deref()
+                        .map(|p| tsproto_types::crypto::encode_password(p.as_bytes()))
+                        .map(Cow::Owned);
                     let part = OutClientMovePart {
                         client_id: ClientId(client_id),
                         channel_id: ChannelId(channel_id),
-                        channel_password: None,
+                        channel_password,
                     };
                     let _ = OutClientMoveMessage::new(&mut std::iter::once(part)).send(&mut con);
                 }
@@ -1970,17 +2016,32 @@ pub extern "C" fn ts_send_channel_message(_cid: u32, msg: *const c_char) -> u8 {
 // ─── Move ───────────────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn ts_move_to_channel(cid: u32) -> u8 {
+pub extern "C" fn ts_move_to_channel(cid: u32, password: *const c_char) -> u8 {
     let own_id = STATE.lock().own_client_id;
     if !STATE.lock().connected {
         return 0;
     }
+    // Empty string (or NULL) means "no password"; only non-empty input is
+    // forwarded. Dart always passes a valid pointer.
+    let password = if password.is_null() {
+        None
+    } else {
+        let s = unsafe { std::ffi::CStr::from_ptr(password) }
+            .to_string_lossy()
+            .into_owned();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
     let tx = COMMAND_TX.lock();
     if let Some(tx) = tx.as_ref() {
         if tx
             .send(Command::MoveChannel {
                 client_id: own_id as u16,
                 channel_id: cid as u64,
+                password,
             })
             .is_ok()
         {

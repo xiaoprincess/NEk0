@@ -463,4 +463,16 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get noChannels => '暂无频道';
+
+  @override
+  String get ok => '确定';
+
+  @override
+  String get channelPasswordTitle => '输入频道密码';
+
+  @override
+  String get channelPasswordHint => '密码';
+
+  @override
+  String get channelPasswordWrong => '频道密码错误';
 }

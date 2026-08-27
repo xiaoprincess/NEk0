@@ -10,6 +10,9 @@ crate-type = ["cdylib"]
 tsclientlib = { git = "https://github.com/ReSpeak/tsclientlib.git", branch = "master", default-features = false, features = ["unstable"] }
 tsproto = { git = "https://github.com/ReSpeak/tsclientlib.git", branch = "master", default-features = false }
 tsproto-packets = { git = "https://github.com/ReSpeak/tsclientlib.git", branch = "master" }
+# Same vendored copy the patched crates use internally (relative path), needed
+# for crypto::encode_password when joining password-protected channels.
+tsproto-types = { path = "local_tsclientlib/utils/tsproto-types" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

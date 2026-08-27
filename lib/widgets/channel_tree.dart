@@ -6,13 +6,21 @@ import '../models/channel.dart';
 class ChannelTree extends StatefulWidget {
   final List<TsChannel> channels;
   final int? selectedChannelId;
-  final ValueChanged<int> onChannelTap;
+  // Receives the whole channel (not just the id) so the caller can decide
+  // e.g. to prompt for a password before joining.
+  final ValueChanged<TsChannel> onChannelTap;
+
+  /// Whether a password was already entered for this channel during the
+  /// session (rendered as an open lock). Null = never ask/known state,
+  /// e.g. while disconnected.
+  final bool Function(int channelId)? sessionPasswordKnown;
 
   const ChannelTree({
     super.key,
     required this.channels,
     this.selectedChannelId,
     required this.onChannelTap,
+    this.sessionPasswordKnown,
   });
 
   @override
@@ -59,7 +67,7 @@ class _ChannelTreeState extends State<ChannelTree> {
               : Colors.transparent,
           child: InkWell(
             onTap: () {
-              widget.onChannelTap(channel.id);
+              widget.onChannelTap(channel);
               // Auto-expand parent when selecting a channel
               if (hasChildren && !_expanded.contains(channel.id)) {
                 setState(() => _expanded.add(channel.id));
@@ -104,18 +112,36 @@ class _ChannelTreeState extends State<ChannelTree> {
                     color: isSelected ? Colors.blue : Colors.grey,
                   ),
                   const SizedBox(width: 6),
-                  // Channel name
+                  // Channel name with a trailing lock badge: closed = needs
+                  // a password, open = already entered in this session.
                   Expanded(
-                    child: Text(
-                      channel.name,
-                      style: TextStyle(
-                        color: isSelected ? Colors.blue : Colors.white,
-                        fontWeight: isSelected
-                            ? FontWeight.bold
-                            : FontWeight.normal,
-                        fontSize: 14,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            channel.name,
+                            style: TextStyle(
+                              color: isSelected ? Colors.blue : Colors.white,
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              fontSize: 14,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (channel.hasPassword) ...[
+                          const SizedBox(width: 4),
+                          Icon(
+                            (widget.sessionPasswordKnown?.call(channel.id) ??
+                                    false)
+                                ? Icons.lock_open
+                                : Icons.lock,
+                            size: 12,
+                            color: Colors.grey.withValues(alpha: 0.8),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                   // Client count badge

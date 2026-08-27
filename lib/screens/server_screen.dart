@@ -4,9 +4,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../l10n/generated/app_localizations.dart';
 
+import '../models/channel.dart';
 import '../models/client.dart';
 import '../models/ts_state.dart';
 import '../services/foreground_service.dart';
+import '../widgets/channel_password_dialog.dart';
 import '../widgets/channel_tree.dart';
 import '../widgets/client_list.dart';
 import '../widgets/chat_panel.dart';
@@ -104,6 +106,28 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
       }
     });
     final conn = ref.watch(tsConnectionProvider);
+    // Wrong password on a channel join: the selection was already rolled
+    // back in ts_state — re-open the prompt with an error message and let
+    // the user retry (or cancel to stay where they are).
+    ref.listen(tsConnectionProvider.select((s) => s.failedPasswordChannelId), (
+      prev,
+      next,
+    ) async {
+      if (next == null || !mounted) return;
+      final st = ref.read(tsConnectionProvider);
+      final name =
+          st.channels.where((c) => c.id == next).firstOrNull?.name ?? '';
+      final al = AppLocalizations.of(context);
+      final pw = await showChannelPasswordDialog(
+        context,
+        channelName: name,
+        errorMessage: al.channelPasswordWrong,
+      );
+      if (!mounted) return;
+      ref.read(tsConnectionProvider.notifier).clearPasswordRejection();
+      if (pw == null || pw.isEmpty) return;
+      ref.read(tsConnectionProvider.notifier).selectChannel(next, password: pw);
+    });
     final connNotifier = ref.read(tsConnectionProvider.notifier);
 
     return Scaffold(
@@ -134,6 +158,25 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     );
   }
 
+  /// Joining a locked channel: prompt for the password the first time,
+  /// reuse the session-cached one afterwards. A wrong password comes back
+  /// as a move_rejected event (handled by the listener in build()).
+  Future<void> _onChannelTap(TsChannel channel) async {
+    final notifier = ref.read(tsConnectionProvider.notifier);
+    final cached = notifier.channelPassword(channel.id);
+    if (channel.hasPassword && cached == null) {
+      final pw = await showChannelPasswordDialog(
+        context,
+        channelName: channel.name,
+      );
+      if (!mounted || pw == null || pw.isEmpty) return; // cancelled
+      notifier.selectChannel(channel.id, password: pw);
+    } else {
+      // Unlocked, or the password is already known for this session.
+      notifier.selectChannel(channel.id, password: cached);
+    }
+  }
+
   Widget _buildLeftPanel(
     TsConnectionState conn,
     TsConnectionNotifier notifier,
@@ -160,7 +203,14 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
             child: ChannelTree(
               channels: conn.channels,
               selectedChannelId: conn.selectedChannelId,
-              onChannelTap: notifier.selectChannel,
+              onChannelTap: _onChannelTap,
+              // Open-lock hint for channels whose password is already
+              // cached for this session.
+              sessionPasswordKnown: (channelId) =>
+                  ref
+                      .read(tsConnectionProvider.notifier)
+                      .channelPassword(channelId) !=
+                  null,
             ),
           ),
           const Divider(height: 1, color: Color(0xFF2A2A4A)),

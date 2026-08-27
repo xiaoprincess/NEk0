@@ -472,4 +472,16 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get noChannels => 'No channels';
+
+  @override
+  String get ok => 'OK';
+
+  @override
+  String get channelPasswordTitle => 'Enter channel password';
+
+  @override
+  String get channelPasswordHint => 'Password';
+
+  @override
+  String get channelPasswordWrong => 'Wrong channel password';
 }

@@ -2300,6 +2300,7 @@ dependencies = [
  "tsclientlib",
  "tsproto",
  "tsproto-packets",
+ "tsproto-types",
 ]
 
 [[package]]

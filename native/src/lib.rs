@@ -19,7 +19,7 @@ pub static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
 #[derive(Debug)]
 pub enum Command {
     SendMessage { target_mode: u8, target_cid: u64, message: String },
-    MoveChannel { client_id: u16, channel_id: u64 },
+    MoveChannel { client_id: u16, channel_id: u64, password: Option<String> },
     SetMuted { input: bool, output: bool },
     SetAway { away: bool },
     SendPoke { client_id: u16, message: String },
@@ -61,6 +61,8 @@ pub enum TsEvent {
     ChannelsUpdated {},
     #[serde(rename = "diag")]
     Diag { msg: String },
+    #[serde(rename = "move_rejected")]
+    MoveRejected { channel_id: u32 },
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -156,6 +158,11 @@ pub struct TsConnection {
     pub mic_gain: f32,
     // Audio receive state
     pub talking_clients: HashMap<u16, Instant>, // last audio timestamp per client (monotonic Instant)
+    /// Target cid + timestamp of the most recent outgoing clientmove. Server
+    /// rejections for our commands arrive without a return_code, so this is
+    /// how an invalid-channel-password error gets attributed back to that
+    /// move (consumed with a time window in api.rs, see CommandError handling).
+    pub pending_move: Option<(u64, Instant)>,
     /// Per-client volume in decibels (dB), keyed by the client's user UID.
     /// Source of truth — NOT cleared on disconnect. The numeric client ID is
     /// only a session-scoped handle; the UID is what survives reconnects and
@@ -184,6 +191,7 @@ impl TsConnection {
             disconnect_requested: false,
             mic_gain: 1.0,
             talking_clients: HashMap::new(),
+            pending_move: None,
             client_volumes: HashMap::new(),
         }
     }

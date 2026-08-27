@@ -184,5 +184,10 @@
   "notifUnmute": "Unmute",
   "notifDisconnect": "Disconnect",
   "notifConnected": "Connected",
-  "noChannels": "No channels"
+  "noChannels": "No channels",
+
+  "ok": "OK",
+  "channelPasswordTitle": "Enter channel password",
+  "channelPasswordHint": "Password",
+  "channelPasswordWrong": "Wrong channel password"
 }

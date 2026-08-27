@@ -50,9 +50,10 @@ typedef _GetClientsDart = Pointer<Utf8> Function();
 typedef _SendChannelMsgNative = Uint8 Function(Uint32, Pointer<Utf8>);
 typedef _SendChannelMsgDart = int Function(int, Pointer<Utf8>);
 
-// ts_move_to_channel(channel_id) -> bool
-typedef _MoveToChannelNative = Uint8 Function(Uint32);
-typedef _MoveToChannelDart = int Function(int);
+// ts_move_to_channel(channel_id, password) -> bool
+// password: null/empty for unlocked channels; plaintext, hashed in Rust.
+typedef _MoveToChannelNative = Uint8 Function(Uint32, Pointer<Utf8>);
+typedef _MoveToChannelDart = int Function(int, Pointer<Utf8>);
 
 // ts_set_muted(input_muted, output_muted) -> bool
 typedef _SetMutedNative = Uint8 Function(Uint8, Uint8);
@@ -272,11 +273,16 @@ class TsNative {
     return result != 0;
   }
 
-  static bool moveToChannel(int channelId) {
-    debugLog('moveToChannel($channelId)');
-    final result = _moveToChannel(channelId) != 0;
-    debugLog('moveToChannel -> $result');
-    return result;
+  static bool moveToChannel(int channelId, {String? password}) {
+    debugLog(
+      'moveToChannel($channelId, pw=${password == null ? 'no' : 'yes'})',
+    );
+    final ptr = _strToPtr(password ?? '');
+    try {
+      return _moveToChannel(channelId, ptr) != 0;
+    } finally {
+      malloc.free(ptr);
+    }
   }
 
   static bool setMuted({required bool input, required bool output}) {

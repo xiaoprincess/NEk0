@@ -25,6 +25,10 @@ class TsConnectionState {
   final List<TsClient> clients;
   final List<ChatMessage> messages;
   final int? selectedChannelId;
+
+  /// Channel id whose join was just rejected because of a wrong password.
+  /// Transient marker consumed by the server screen to re-open the prompt.
+  final int? failedPasswordChannelId;
   final String? error;
   final List<String> diagMessages;
   final bool voiceActive;
@@ -48,6 +52,7 @@ class TsConnectionState {
     this.clients = const [],
     this.messages = const [],
     this.selectedChannelId,
+    this.failedPasswordChannelId,
     this.error,
     this.diagMessages = const [],
     this.voiceActive = false,
@@ -72,6 +77,7 @@ class TsConnectionState {
     List<TsClient>? clients,
     List<ChatMessage>? messages,
     Object? selectedChannelId = _sentinel,
+    Object? failedPasswordChannelId = _sentinel,
     String? error,
     List<String>? diagMessages,
     bool? voiceActive,
@@ -96,6 +102,9 @@ class TsConnectionState {
     selectedChannelId: selectedChannelId == _sentinel
         ? this.selectedChannelId
         : selectedChannelId as int?,
+    failedPasswordChannelId: failedPasswordChannelId == _sentinel
+        ? this.failedPasswordChannelId
+        : failedPasswordChannelId as int?,
     error: error,
     diagMessages: diagMessages ?? this.diagMessages,
     voiceActive: voiceActive ?? this.voiceActive,
@@ -138,6 +147,9 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
       false; // true only after enableMic() successfully completes
   bool _inputMutedBeforeAway = false; // input mute to restore when leaving away
   SharedPreferences? _prefs; // cached for synchronous saves
+  // Session-only cache of channel passwords entered by the user, keyed by
+  // channel id. Cleared on disconnect; deliberately never persisted to disk.
+  final Map<int, String> _channelPasswords = {};
 
   @override
   TsConnectionState build() {
@@ -323,6 +335,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         _audioService?.stop();
         _audioService = null;
         ForegroundService.stop();
+        _channelPasswords.clear();
         state = const TsConnectionState();
         break;
 
@@ -383,6 +396,20 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         state = state.copyWith(diagMessages: [...state.diagMessages, msg]);
         break;
 
+      case 'move_rejected':
+        // Only emitted for invalid-channel-password rejections; roll back
+        // the optimistic selection and prompt the user again via the UI.
+        final rejectedCid = event['channel_id'] as int;
+        _channelPasswords.remove(rejectedCid);
+        final own = state.clients
+            .where((c) => c.id == state.ownClientId)
+            .firstOrNull;
+        state = state.copyWith(
+          selectedChannelId: own?.channelId,
+          failedPasswordChannelId: rejectedCid,
+        );
+        break;
+
       case 'channels_updated':
         // Re-fetch channels and clients from Rust cache
         final chJson = TsNative.getChannels();
@@ -438,10 +465,37 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     state = state.copyWith(messages: [...state.messages, msg]);
   }
 
-  void selectChannel(int channelId) {
+  /// The password entered for a locked channel during this session
+  /// (null when none was entered yet).
+  String? channelPassword(int channelId) => _channelPasswords[channelId];
+
+  /// Clears the transient "password rejected" marker (after the retry
+  /// prompt has been shown, whether or not the user retries).
+  void clearPasswordRejection() {
+    if (state.failedPasswordChannelId != null) {
+      state = state.copyWith(failedPasswordChannelId: null);
+    }
+  }
+
+  void selectChannel(int channelId, {String? password}) {
     debugPrint('TS: selectChannel($channelId)');
-    state = state.copyWith(selectedChannelId: channelId);
-    TsNative.moveToChannel(channelId);
+    if (!state.connected) return;
+    final channel = state.channels.where((c) => c.id == channelId).firstOrNull;
+    var effectivePassword = password;
+    if (channel?.hasPassword ?? false) {
+      if (effectivePassword == null || effectivePassword.isEmpty) {
+        effectivePassword = _channelPasswords[channelId];
+      }
+      if (effectivePassword == null || effectivePassword.isEmpty) return;
+      _channelPasswords[channelId] = effectivePassword;
+    }
+    // Reset any previous rejection marker BEFORE sending, so a repeat
+    // failure with the same channel id still re-triggers UI listeners.
+    state = state.copyWith(
+      failedPasswordChannelId: null,
+      selectedChannelId: channelId,
+    );
+    TsNative.moveToChannel(channelId, password: effectivePassword);
   }
 
   // ─── Voice control flow ──────────────────────────────────────────

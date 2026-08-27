@@ -164,5 +164,10 @@
   "notifUnmute": "取消静音",
   "notifDisconnect": "断开连接",
   "notifConnected": "已连接",
-  "noChannels": "暂无频道"
+  "noChannels": "暂无频道",
+
+  "ok": "确定",
+  "channelPasswordTitle": "输入频道密码",
+  "channelPasswordHint": "密码",
+  "channelPasswordWrong": "频道密码错误"
 }
