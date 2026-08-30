@@ -189,5 +189,60 @@
   "ok": "OK",
   "channelPasswordTitle": "Enter channel password",
   "channelPasswordHint": "Password",
-  "channelPasswordWrong": "Wrong channel password"
+  "channelPasswordWrong": "Wrong channel password",
+"menuEnterChannel": "Join channel",
+  "menuFileManager": "File management",
+
+  "audio": "Audio",
+
+  "gestureSection": "Channel gestures",
+  "gestureDefault": "Tap: switch channel · Long press: menu",
+  "gestureSwapped": "Tap: menu · Long press: switch channel",
+
+  "fmUp": "Up",
+  "fmRootShort": "/",
+  "fmSearch": "Search files",
+  "fmSearchHint": "Search in this folder tree…",
+  "fmNoResults": "No matches found",
+  "fmUploadFile": "Upload file",
+  "fmUploadFolder": "Upload folder",
+  "fmUploadDone": "Upload finished",
+  "fmNewFolder": "New folder",
+  "fmNewFolderName": "Folder name",
+  "fmInvalidName": "Invalid folder name",
+  "fmFolderCreated": "Folder created",
+  "fmDownload": "Download",
+  "fmDelete": "Delete",
+  "fmConfirmDeleteFile": "Delete file \"{name}\"?",
+  "@fmConfirmDeleteFile": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "fmConfirmDeleteFolder": "Delete folder \"{name}\" and ALL of its contents?",
+  "@fmConfirmDeleteFolder": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "fmDeleted": "Deleted",
+  "fmSavedToDownloads": "Saved to Downloads",
+  "fmNotConnected": "Connect to a server to manage its files.",
+  "fmEmpty": "Empty folder",
+  "fmRefresh": "Refresh",
+  "fmCancelTransfer": "Cancel transfer",
+  "fmTransfersTitle": "Transfers",
+  "fmStateDone": "Done",
+  "fmStateError": "Failed",
+  "fmStateCanceled": "Canceled",
+  "fmOperationFailed": "Operation failed",
+  "fmClearHistory": "Clear finished",
+"fmPermDenied": "The server has not granted file-transfer permissions",
+  "fmCanceled": "Transfer canceled",
+  "fmReasonPrefix": "Operation failed: {reason}",
+  "@fmReasonPrefix": {
+    "placeholders": {
+      "reason": { "type": "String" }
+    }
+  }
 }

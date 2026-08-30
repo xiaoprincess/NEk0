@@ -121,4 +121,28 @@ class ForegroundService {
       // Notifications are best-effort; never crash the poll loop.
     }
   }
+
+  /// Copies a finished download into the shared Downloads collection
+  /// (MediaStore on Android 10+, app-private fallback folder below).
+  /// Returns a user-facing destination description, or null on failure.
+  static Future<String?> saveToDownloads({
+    required String srcPath,
+    required String displayName,
+    String? relativeDir,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod('save_to_downloads', {
+        'src_path': srcPath,
+        'display_name': displayName,
+        if (relativeDir != null && relativeDir.isNotEmpty)
+          'relative_dir': relativeDir,
+      });
+      if (result is Map) {
+        return (result['destination'] as String?) ?? '';
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
 }

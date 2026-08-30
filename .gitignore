@@ -55,3 +55,4 @@ target/
 
 .claude
 libtsclient.so
+.zcode

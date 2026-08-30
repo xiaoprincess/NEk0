@@ -1009,6 +1009,228 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Wrong channel password'**
   String get channelPasswordWrong;
+
+  /// No description provided for @menuEnterChannel.
+  ///
+  /// In en, this message translates to:
+  /// **'Join channel'**
+  String get menuEnterChannel;
+
+  /// No description provided for @menuFileManager.
+  ///
+  /// In en, this message translates to:
+  /// **'File management'**
+  String get menuFileManager;
+
+  /// No description provided for @audio.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio'**
+  String get audio;
+
+  /// No description provided for @gestureSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Channel gestures'**
+  String get gestureSection;
+
+  /// No description provided for @gestureDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap: switch channel · Long press: menu'**
+  String get gestureDefault;
+
+  /// No description provided for @gestureSwapped.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap: menu · Long press: switch channel'**
+  String get gestureSwapped;
+
+  /// No description provided for @fmUp.
+  ///
+  /// In en, this message translates to:
+  /// **'Up'**
+  String get fmUp;
+
+  /// No description provided for @fmRootShort.
+  ///
+  /// In en, this message translates to:
+  /// **'/'**
+  String get fmRootShort;
+
+  /// No description provided for @fmSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search files'**
+  String get fmSearch;
+
+  /// No description provided for @fmSearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search in this folder tree…'**
+  String get fmSearchHint;
+
+  /// No description provided for @fmNoResults.
+  ///
+  /// In en, this message translates to:
+  /// **'No matches found'**
+  String get fmNoResults;
+
+  /// No description provided for @fmUploadFile.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload file'**
+  String get fmUploadFile;
+
+  /// No description provided for @fmUploadFolder.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload folder'**
+  String get fmUploadFolder;
+
+  /// No description provided for @fmUploadDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload finished'**
+  String get fmUploadDone;
+
+  /// No description provided for @fmNewFolder.
+  ///
+  /// In en, this message translates to:
+  /// **'New folder'**
+  String get fmNewFolder;
+
+  /// No description provided for @fmNewFolderName.
+  ///
+  /// In en, this message translates to:
+  /// **'Folder name'**
+  String get fmNewFolderName;
+
+  /// No description provided for @fmInvalidName.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid folder name'**
+  String get fmInvalidName;
+
+  /// No description provided for @fmFolderCreated.
+  ///
+  /// In en, this message translates to:
+  /// **'Folder created'**
+  String get fmFolderCreated;
+
+  /// No description provided for @fmDownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Download'**
+  String get fmDownload;
+
+  /// No description provided for @fmDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get fmDelete;
+
+  /// No description provided for @fmConfirmDeleteFile.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete file \"{name}\"?'**
+  String fmConfirmDeleteFile(String name);
+
+  /// No description provided for @fmConfirmDeleteFolder.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete folder \"{name}\" and ALL of its contents?'**
+  String fmConfirmDeleteFolder(String name);
+
+  /// No description provided for @fmDeleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted'**
+  String get fmDeleted;
+
+  /// No description provided for @fmSavedToDownloads.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved to Downloads'**
+  String get fmSavedToDownloads;
+
+  /// No description provided for @fmNotConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect to a server to manage its files.'**
+  String get fmNotConnected;
+
+  /// No description provided for @fmEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Empty folder'**
+  String get fmEmpty;
+
+  /// No description provided for @fmRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get fmRefresh;
+
+  /// No description provided for @fmCancelTransfer.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel transfer'**
+  String get fmCancelTransfer;
+
+  /// No description provided for @fmTransfersTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Transfers'**
+  String get fmTransfersTitle;
+
+  /// No description provided for @fmStateDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Done'**
+  String get fmStateDone;
+
+  /// No description provided for @fmStateError.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get fmStateError;
+
+  /// No description provided for @fmStateCanceled.
+  ///
+  /// In en, this message translates to:
+  /// **'Canceled'**
+  String get fmStateCanceled;
+
+  /// No description provided for @fmOperationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Operation failed'**
+  String get fmOperationFailed;
+
+  /// No description provided for @fmClearHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear finished'**
+  String get fmClearHistory;
+
+  /// No description provided for @fmPermDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'The server has not granted file-transfer permissions'**
+  String get fmPermDenied;
+
+  /// No description provided for @fmCanceled.
+  ///
+  /// In en, this message translates to:
+  /// **'Transfer canceled'**
+  String get fmCanceled;
+
+  /// No description provided for @fmReasonPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Operation failed: {reason}'**
+  String fmReasonPrefix(String reason);
 }
 
 class _AppLocalizationsDelegate

@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64};
 use std::time::Instant;
 use tokio::runtime::Runtime;
 
@@ -25,6 +25,119 @@ pub enum Command {
     SendPoke { client_id: u16, message: String },
     Disconnect,
     SendAudio { data: Vec<f32> },
+    // File transfer commands (see FtTask / FT_TASKS below). `cid` is the
+    // channel whose file storage is addressed; remote paths start with '/',
+    // passwords are plaintext (encoded per-command where the protocol needs
+    // the hashed cpw form).
+    FtList { cid: u64, path: String, password: Option<String>, token: String },
+    FtCreateDir { cid: u64, dirname: String, password: Option<String>, token: String },
+    FtDelete { cid: u64, names: Vec<String>, password: Option<String>, token: String },
+    /// The task was pre-registered by the FFI call (`task_id`); assigning the
+    /// protocol transfer id happens here once the request was sent out.
+    FtDownload { cid: u64, path: String, password: Option<String>, task_id: u32 },
+    FtUpload { cid: u64, path: String, password: Option<String>, task_id: u32 },
+}
+
+// ─── File transfers (channel file management) ────────────────────────
+
+/// Kind of an active transfer task (mirrors TransferKind in Dart).
+pub const FT_KIND_DOWNLOAD: u8 = 0;
+pub const FT_KIND_UPLOAD: u8 = 1;
+
+pub struct FtTask {
+    pub kind: u8,
+    /// Display name of the transferred file (last path segment).
+    pub name: String,
+    /// Local absolute path: written for downloads, read for uploads.
+    pub local_path: String,
+    /// Total size in bytes. For downloads this is filled in when the server
+    /// announces the size (FileDownload event); uploads know it upfront.
+    pub total: std::sync::atomic::AtomicU64,
+    /// Bytes written so far (atomically published for Dart progress).
+    pub done: std::sync::atomic::AtomicU64,
+    /// Cooperative cancel flag: set by ts_ft_cancel, polled by the worker.
+    pub cancel: std::sync::Arc<AtomicBool>,
+    /// The client-side transfer id used in ftinit* commands, so a
+    /// StreamItem::FiletransferFailed can be attributed back to this task.
+    pub client_ft_id: AtomicU16,
+    /// Last progress event publish time — throttles events.
+    pub last_event: Mutex<Option<Instant>>,
+}
+
+pub static FT_TASK_SEQ: AtomicU32 = AtomicU32::new(1);
+pub static FT_TASKS: Lazy<DashMap<u32, std::sync::Arc<FtTask>>> = Lazy::new(DashMap::new);
+
+/// Client-chosen transfer ids for ftinitdownload/ftinitupload. The vendored
+/// library's counter is private, and its generated packets always write a
+/// (possibly bare) `cpw` argument — ours must omit it, so we build those
+/// packets ourselves. 0x4000+ keeps clear of anything the library assigns.
+pub static FT_CLIENT_FT: AtomicU16 = AtomicU16::new(0x4000);
+
+/// Maps the return_code of an ftinitdownload/ftinitupload to its task so a
+/// rejection (the plain error frame) fails the task with a real reason.
+pub static FT_TASK_BY_RC: Lazy<Mutex<HashMap<u16, u32>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// A pending directory listing: keyed by the return_code assigned when the
+/// ftgetfilelist command was sent.
+///
+/// IMPORTANT: the server answers with the terminal error frame FIRST and
+/// streams the notifyfilelist rows afterwards (observed live). The listing
+/// is therefore complete only when BOTH the result frame and the
+/// notifyfilelistfinished marker were seen.
+pub struct PendingFtList {
+    pub token: String,
+    pub entries: Vec<TsFtEntry>,
+    /// Sent time — used to prune requests the server never answered.
+    pub created: std::time::Instant,
+    /// Address of the listed directory — lets the finished marker (which
+    /// carries no return_code) be matched back to this request.
+    pub cid: u64,
+    pub path: String,
+    /// The trailing error frame arrived (result carried in `error`).
+    pub result_seen: bool,
+    pub result_ok: bool,
+    pub result_error: Option<String>,
+    /// The notifyfilelistfinished marker arrived.
+    pub finished_seen: bool,
+    /// Deferred finalize already scheduled (no duplicate timers).
+    pub finalize_scheduled: bool,
+}
+
+/// An entry awaiting its trailing error frame for ftcreatedir/ftdeletefile.
+/// Same contract as FT_LISTS: keyed by the return_code we assigned.
+#[allow(dead_code)]
+pub struct PendingFtOp {
+    pub token: String,
+}
+
+pub static FT_OPS: Lazy<Mutex<HashMap<u16, PendingFtOp>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub static FT_LISTS: Lazy<Mutex<HashMap<u16, PendingFtList>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TsFtEntry {
+    pub name: String,
+    pub size: u64,
+    /// Modification time as unix seconds (-1 when unknown).
+    pub datetime: i64,
+    pub is_file: bool,
+}
+
+/// Publishes a finished/failed/canceled task and removes it from FT_TASKS.
+/// No-op when the task is already gone (e.g. resolved by an earlier status).
+pub fn finish_ft_task(task_id: u32, ok: bool, error: Option<String>) {
+    if let Some((_, task)) = FT_TASKS.remove(&task_id) {
+        let transferred = task.done.load(std::sync::atomic::Ordering::Relaxed);
+        STATE.lock().pending_events.push_back(TsEvent::FtDone {
+            task_id,
+            ok,
+            transferred,
+            error,
+        });
+    }
 }
 
 pub static COMMAND_TX: Lazy<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Command>>>> =
@@ -65,6 +178,16 @@ pub enum TsEvent {
     MoveRejected { channel_id: u32 },
     #[serde(rename = "error")]
     Error { message: String },
+    #[serde(rename = "ft_op")]
+    FtOp { token: String, ok: bool, error: Option<String> },
+    #[serde(rename = "ft_listing")]
+    FtListing { token: String, entries: Vec<TsFtEntry>, error: Option<String> },
+    #[serde(rename = "ft_started")]
+    FtStarted { task_id: u32, kind: u8, name: String, total: u64 },
+    #[serde(rename = "ft_progress")]
+    FtProgress { task_id: u32, transferred: u64 },
+    #[serde(rename = "ft_done")]
+    FtDone { task_id: u32, ok: bool, transferred: u64, error: Option<String> },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

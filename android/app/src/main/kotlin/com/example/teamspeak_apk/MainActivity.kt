@@ -94,6 +94,12 @@ class MainActivity : FlutterActivity() {
                         showPokeNotification(title, body)
                         result.success(true)
                     }
+                    "save_to_downloads" -> {
+                        val src = call.argument<String>("src_path") ?: ""
+                        val name = call.argument<String>("display_name") ?: "file"
+                        val relDir = call.argument<String>("relative_dir")
+                        result.success(saveToDownloads(src, name, relDir))
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -165,6 +171,53 @@ class MainActivity : FlutterActivity() {
             pm.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
         } catch (_: Exception) {
             // Best-effort: a poke notification must never crash the app.
+        }
+    }
+
+    /// Copies a finished download into the shared Downloads collection.
+    /// Android 10+: MediaStore.Downloads with RELATIVE_PATH (no permission
+    /// needed). Below that: the app-private downloads folder as fallback —
+    /// legacy runtime storage permissions are deliberately not requested.
+    /// Returns a map {ok, destination} for user-facing feedback.
+    private fun saveToDownloads(srcPath: String, displayName: String, relativeDir: String?): Map<String, Any> {
+        val src = java.io.File(srcPath)
+        if (!src.exists() || !src.isFile) {
+            return mapOf("ok" to false)
+        }
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Sanitize the sub path against traversal out of Download/.
+                val safeDir = relativeDir
+                    ?.trim('/')
+                    ?.replace("..", "_")
+                    ?.takeIf { it.isNotBlank() }
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, displayName)
+                    if (safeDir != null) {
+                        put(
+                            android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                            "Download/$safeDir"
+                        )
+                    } else {
+                        put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download")
+                    }
+                }
+                val resolver = contentResolver
+                val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: return mapOf("ok" to false)
+                resolver.openOutputStream(uri)?.use { out ->
+                    src.inputStream().use { it.copyTo(out) }
+                } ?: return mapOf("ok" to false)
+                mapOf("ok" to true, "destination" to "Download/${if (safeDir != null) "$safeDir/" else ""}$displayName")
+            } else {
+                // Pre-Q fallback: app-private external files dir.
+                val dir = java.io.File(getExternalFilesDir(null), "Downloads").apply { mkdirs() }
+                val target = java.io.File(dir, displayName)
+                src.copyTo(target, overwrite = true)
+                mapOf("ok" to true, "destination" to target.absolutePath)
+            }
+        } catch (_: Exception) {
+            mapOf("ok" to false)
         }
     }
 

@@ -475,4 +475,121 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get channelPasswordWrong => '频道密码错误';
+
+  @override
+  String get menuEnterChannel => '进入频道';
+
+  @override
+  String get menuFileManager => '文件管理';
+
+  @override
+  String get audio => '音频';
+
+  @override
+  String get gestureSection => '频道手势';
+
+  @override
+  String get gestureDefault => '短按：切换频道 · 长按：菜单';
+
+  @override
+  String get gestureSwapped => '短按：菜单 · 长按：切换频道';
+
+  @override
+  String get fmUp => '上一级';
+
+  @override
+  String get fmRootShort => '/';
+
+  @override
+  String get fmSearch => '搜索文件';
+
+  @override
+  String get fmSearchHint => '在此目录树中搜索…';
+
+  @override
+  String get fmNoResults => '没有匹配的结果';
+
+  @override
+  String get fmUploadFile => '上传文件';
+
+  @override
+  String get fmUploadFolder => '上传文件夹';
+
+  @override
+  String get fmUploadDone => '上传完成';
+
+  @override
+  String get fmNewFolder => '新建文件夹';
+
+  @override
+  String get fmNewFolderName => '文件夹名称';
+
+  @override
+  String get fmInvalidName => '文件夹名称无效';
+
+  @override
+  String get fmFolderCreated => '文件夹已创建';
+
+  @override
+  String get fmDownload => '下载';
+
+  @override
+  String get fmDelete => '删除';
+
+  @override
+  String fmConfirmDeleteFile(String name) {
+    return '确定删除文件 \"$name\" 吗？';
+  }
+
+  @override
+  String fmConfirmDeleteFolder(String name) {
+    return '确定删除文件夹 \"$name\" 及其全部内容吗？';
+  }
+
+  @override
+  String get fmDeleted => '已删除';
+
+  @override
+  String get fmSavedToDownloads => '已保存到系统下载';
+
+  @override
+  String get fmNotConnected => '连接到服务器后才能管理文件。';
+
+  @override
+  String get fmEmpty => '空文件夹';
+
+  @override
+  String get fmRefresh => '刷新';
+
+  @override
+  String get fmCancelTransfer => '取消传输';
+
+  @override
+  String get fmTransfersTitle => '传输任务';
+
+  @override
+  String get fmStateDone => '已完成';
+
+  @override
+  String get fmStateError => '失败';
+
+  @override
+  String get fmStateCanceled => '已取消';
+
+  @override
+  String get fmOperationFailed => '操作失败';
+
+  @override
+  String get fmClearHistory => '清除已完成';
+
+  @override
+  String get fmPermDenied => '服务器未授予文件传输权限';
+
+  @override
+  String get fmCanceled => '传输已取消';
+
+  @override
+  String fmReasonPrefix(String reason) {
+    return '操作失败：$reason';
+  }
 }

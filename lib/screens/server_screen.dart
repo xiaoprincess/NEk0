@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../l10n/generated/app_localizations.dart';
 
+import '../models/app_settings.dart';
 import '../models/channel.dart';
 import '../models/client.dart';
 import '../models/ts_state.dart';
@@ -13,6 +14,8 @@ import '../widgets/channel_tree.dart';
 import '../widgets/client_list.dart';
 import '../widgets/chat_panel.dart';
 import '../widgets/connection_bar.dart';
+import '../screens/file_manager_screen.dart';
+import '../widgets/channel_menu.dart';
 import '../widgets/spotlight_tour.dart';
 import '../widgets/voice_settings_panel.dart';
 
@@ -177,10 +180,38 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     }
   }
 
+  /// Opens the per-channel context menu and dispatches the chosen entry.
+  /// The join action reuses [_onChannelTap] so password handling stays in
+  /// one place regardless of which gesture summoned the menu.
+  Future<void> _onChannelMenu(TsChannel channel) async {
+    final result = await showChannelMenu(context, channel);
+    if (!mounted || result == null) return;
+    switch (result) {
+      case channelMenuJoin:
+        await _onChannelTap(channel);
+      case channelMenuFileManager:
+        final notifier = ref.read(tsConnectionProvider.notifier);
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => FileManagerScreen(
+              channelId: channel.id,
+              channelName: channel.name,
+              channelPassword: notifier.channelPassword(channel.id) ?? '',
+              connected: ref.read(tsConnectionProvider).connected,
+            ),
+          ),
+        );
+    }
+  }
+
   Widget _buildLeftPanel(
     TsConnectionState conn,
     TsConnectionNotifier notifier,
   ) {
+    final gestureSwap = ref.watch(
+      appSettingsProvider.select((s) => s.channelGestureSwap),
+    );
     return Container(
       color: const Color(0xFF12122A),
       child: Column(
@@ -200,17 +231,28 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
           ),
           Expanded(
             flex: 3,
-            child: ChannelTree(
-              channels: conn.channels,
-              selectedChannelId: conn.selectedChannelId,
-              onChannelTap: _onChannelTap,
-              // Open-lock hint for channels whose password is already
-              // cached for this session.
-              sessionPasswordKnown: (channelId) =>
-                  ref
-                      .read(tsConnectionProvider.notifier)
-                      .channelPassword(channelId) !=
-                  null,
+            // Material between the colored container and the tiles: ListTile
+            // paints background and ink on the nearest Material — with only
+            // the ColoredBox ancestor above, Flutter throws "ListTile
+            // background color or ink splashes may be invisible" on every
+            // rebuild.
+            child: Material(
+              type: MaterialType.transparency,
+              child: ChannelTree(
+                channels: conn.channels,
+                selectedChannelId: conn.selectedChannelId,
+                // Gesture swap from settings: default short tap joins and a
+                // long press opens the menu; swapped, the roles are reversed.
+                onChannelTap: gestureSwap ? _onChannelMenu : _onChannelTap,
+                onChannelMenu: gestureSwap ? _onChannelTap : _onChannelMenu,
+                // Open-lock hint for channels whose password is already
+                // cached for this session.
+                sessionPasswordKnown: (channelId) =>
+                    ref
+                        .read(tsConnectionProvider.notifier)
+                        .channelPassword(channelId) !=
+                    null,
+              ),
             ),
           ),
           const Divider(height: 1, color: Color(0xFF2A2A4A)),
@@ -233,19 +275,24 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
           if (conn.selectedChannelId != null)
             Expanded(
               flex: 2,
-              child: ClientList(
-                clients: conn.clients,
-                currentChannelId: conn.selectedChannelId!,
-                // Tapping yourself opens the same voice settings as
-                // long-pressing the mic; tapping others opens their
-                // per-client volume + poke sheet.
-                onClientTap: (clientId) {
-                  if (clientId == conn.ownClientId) {
-                    _showVoiceSettings(conn, notifier);
-                  } else {
-                    _showClientVolume(clientId);
-                  }
-                },
+              // Same Material reason as the channel tree above: the client
+              // ListTiles sit under a colored container.
+              child: Material(
+                type: MaterialType.transparency,
+                child: ClientList(
+                  clients: conn.clients,
+                  currentChannelId: conn.selectedChannelId!,
+                  // Tapping yourself opens the same voice settings as
+                  // long-pressing the mic; tapping others opens their
+                  // per-client volume + poke sheet.
+                  onClientTap: (clientId) {
+                    if (clientId == conn.ownClientId) {
+                      _showVoiceSettings(conn, notifier);
+                    } else {
+                      _showClientVolume(clientId);
+                    }
+                  },
+                ),
               ),
             ),
         ],

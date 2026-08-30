@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' show Platform;
 import 'package:ffi/ffi.dart';
@@ -120,6 +121,42 @@ typedef _SetAwayDart = int Function(int);
 typedef _SendPokeNative = Uint8 Function(Uint16, Pointer<Utf8>);
 typedef _SendPokeDart = int Function(int, Pointer<Utf8>);
 
+// ─── File transfer (channel file management) ────────────────────────
+
+// ts_ft_list(channel_id, path, password, token) -> bool
+typedef _FtListNative =
+    Uint8 Function(Uint32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _FtListDart =
+    int Function(int, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_ft_mkdir(channel_id, dirname, password, token) -> bool
+typedef _FtMkDirNative =
+    Uint8 Function(Uint32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _FtMkDirDart =
+    int Function(int, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_ft_delete(channel_id, names_json, password, token) -> bool
+typedef _FtDeleteNative =
+    Uint8 Function(Uint32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _FtDeleteDart =
+    int Function(int, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_ft_download(channel_id, remote_path, dest_local_path, password) -> task_id
+typedef _FtDownloadNative =
+    Uint32 Function(Uint32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _FtDownloadDart =
+    int Function(int, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_ft_upload(channel_id, remote_path, src_local_path, password) -> task_id
+typedef _FtUploadNative =
+    Uint32 Function(Uint32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef _FtUploadDart =
+    int Function(int, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_ft_cancel(task_id) -> bool
+typedef _FtCancelNative = Uint8 Function(Uint32);
+typedef _FtCancelDart = int Function(int);
+
 // ─── Bindings ───────────────────────────────────────────────────────
 
 final _connect = _lib.lookupFunction<_ConnectNative, _ConnectDart>(
@@ -199,6 +236,22 @@ final _setAway = _lib.lookupFunction<_SetAwayNative, _SetAwayDart>(
 );
 final _sendPoke = _lib.lookupFunction<_SendPokeNative, _SendPokeDart>(
   'ts_send_poke',
+);
+final _ftList = _lib.lookupFunction<_FtListNative, _FtListDart>('ts_ft_list');
+final _ftMkDir = _lib.lookupFunction<_FtMkDirNative, _FtMkDirDart>(
+  'ts_ft_mkdir',
+);
+final _ftDelete = _lib.lookupFunction<_FtDeleteNative, _FtDeleteDart>(
+  'ts_ft_delete',
+);
+final _ftDownload = _lib.lookupFunction<_FtDownloadNative, _FtDownloadDart>(
+  'ts_ft_download',
+);
+final _ftUpload = _lib.lookupFunction<_FtUploadNative, _FtUploadDart>(
+  'ts_ft_upload',
+);
+final _ftCancel = _lib.lookupFunction<_FtCancelNative, _FtCancelDart>(
+  'ts_ft_cancel',
 );
 
 // ─── Helper ─────────────────────────────────────────────────────────
@@ -381,6 +434,119 @@ class TsNative {
       malloc.free(ptr);
     }
   }
+
+  // ─── File transfers ────────────────────────────────────────────────
+
+  /// Requests a directory listing for a channel's file area. The answer
+  /// arrives asynchronously as an `ft_listing` event carrying [token].
+  static bool ftListToken(
+    int channelId,
+    String path,
+    String token, {
+    String? password,
+  }) {
+    final p = _strToPtr(path);
+    final pw = _strToPtr(password);
+    final t = _strToPtr(token);
+    try {
+      return _ftList(channelId, p, pw, t) != 0;
+    } finally {
+      malloc.free(p);
+      malloc.free(pw);
+      malloc.free(t);
+    }
+  }
+
+  /// Creates a directory in a channel's file area. Returns true when the
+  /// request was queued; the real outcome arrives as an `ft_op` event
+  /// carrying [token].
+  static bool ftMkDir(
+    int channelId,
+    String dirname,
+    String token, {
+    String? password,
+  }) {
+    debugLog('ftMkDir(cid=$channelId, dir=$dirname)');
+    final pd = _strToPtr(dirname);
+    final pw = _strToPtr(password);
+    final pt = _strToPtr(token);
+    try {
+      return _ftMkDir(channelId, pd, pw, pt) != 0;
+    } finally {
+      malloc.free(pd);
+      malloc.free(pw);
+      malloc.free(pt);
+    }
+  }
+
+  /// Deletes entries (files and/or folders — folders are removed
+  /// recursively by the server). Paths must be COMPLETE remote addresses.
+  /// Returns true when queued; the outcome arrives as `ft_op` with [token].
+  static bool ftDelete(
+    int channelId,
+    List<String> fullPaths,
+    String token, {
+    String? password,
+  }) {
+    debugLog('ftDelete(cid=$channelId, names=${fullPaths.length})');
+    final json = jsonEncode(fullPaths);
+    final pj = _strToPtr(json);
+    final pw = _strToPtr(password);
+    final pt = _strToPtr(token);
+    try {
+      return _ftDelete(channelId, pj, pw, pt) != 0;
+    } finally {
+      malloc.free(pj);
+      malloc.free(pw);
+      malloc.free(pt);
+    }
+  }
+
+  /// Starts downloading a remote file to a local absolute path. Returns a
+  /// task id for progress/cancel tracking, or 0 when the request could not
+  /// be queued at all.
+  static int ftDownload(
+    int channelId,
+    String remotePath,
+    String destLocalPath, {
+    String? password,
+  }) {
+    debugLog('ftDownload(cid=$channelId, $remotePath)');
+    final p = _strToPtr(remotePath);
+    final d = _strToPtr(destLocalPath);
+    final pw = _strToPtr(password);
+    try {
+      return _ftDownload(channelId, p, d, pw);
+    } finally {
+      malloc.free(p);
+      malloc.free(d);
+      malloc.free(pw);
+    }
+  }
+
+  /// Starts uploading a local file to a remote path. Returns a task id or 0.
+  static int ftUpload(
+    int channelId,
+    String remotePath,
+    String srcLocalPath, {
+    String? password,
+  }) {
+    debugLog('ftUpload(cid=$channelId, $remotePath)');
+    final p = _strToPtr(remotePath);
+    final s = _strToPtr(srcLocalPath);
+    final pw = _strToPtr(password);
+    try {
+      return _ftUpload(channelId, p, s, pw);
+    } finally {
+      malloc.free(p);
+      malloc.free(s);
+      malloc.free(pw);
+    }
+  }
+
+  /// Cancels an active transfer task (cooperative — some bytes may already
+  /// be on disk / on the wire).
+  static bool ftCancel(int taskId) => _ftCancel(taskId) != 0;
 }
 
 void debugLog(String msg) {

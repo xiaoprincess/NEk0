@@ -484,4 +484,122 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get channelPasswordWrong => 'Wrong channel password';
+
+  @override
+  String get menuEnterChannel => 'Join channel';
+
+  @override
+  String get menuFileManager => 'File management';
+
+  @override
+  String get audio => 'Audio';
+
+  @override
+  String get gestureSection => 'Channel gestures';
+
+  @override
+  String get gestureDefault => 'Tap: switch channel · Long press: menu';
+
+  @override
+  String get gestureSwapped => 'Tap: menu · Long press: switch channel';
+
+  @override
+  String get fmUp => 'Up';
+
+  @override
+  String get fmRootShort => '/';
+
+  @override
+  String get fmSearch => 'Search files';
+
+  @override
+  String get fmSearchHint => 'Search in this folder tree…';
+
+  @override
+  String get fmNoResults => 'No matches found';
+
+  @override
+  String get fmUploadFile => 'Upload file';
+
+  @override
+  String get fmUploadFolder => 'Upload folder';
+
+  @override
+  String get fmUploadDone => 'Upload finished';
+
+  @override
+  String get fmNewFolder => 'New folder';
+
+  @override
+  String get fmNewFolderName => 'Folder name';
+
+  @override
+  String get fmInvalidName => 'Invalid folder name';
+
+  @override
+  String get fmFolderCreated => 'Folder created';
+
+  @override
+  String get fmDownload => 'Download';
+
+  @override
+  String get fmDelete => 'Delete';
+
+  @override
+  String fmConfirmDeleteFile(String name) {
+    return 'Delete file \"$name\"?';
+  }
+
+  @override
+  String fmConfirmDeleteFolder(String name) {
+    return 'Delete folder \"$name\" and ALL of its contents?';
+  }
+
+  @override
+  String get fmDeleted => 'Deleted';
+
+  @override
+  String get fmSavedToDownloads => 'Saved to Downloads';
+
+  @override
+  String get fmNotConnected => 'Connect to a server to manage its files.';
+
+  @override
+  String get fmEmpty => 'Empty folder';
+
+  @override
+  String get fmRefresh => 'Refresh';
+
+  @override
+  String get fmCancelTransfer => 'Cancel transfer';
+
+  @override
+  String get fmTransfersTitle => 'Transfers';
+
+  @override
+  String get fmStateDone => 'Done';
+
+  @override
+  String get fmStateError => 'Failed';
+
+  @override
+  String get fmStateCanceled => 'Canceled';
+
+  @override
+  String get fmOperationFailed => 'Operation failed';
+
+  @override
+  String get fmClearHistory => 'Clear finished';
+
+  @override
+  String get fmPermDenied =>
+      'The server has not granted file-transfer permissions';
+
+  @override
+  String get fmCanceled => 'Transfer canceled';
+
+  @override
+  String fmReasonPrefix(String reason) {
+    return 'Operation failed: $reason';
+  }
 }

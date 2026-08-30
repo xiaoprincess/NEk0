@@ -269,6 +269,8 @@ struct ConnectedConnection {
 	client: client::Client,
 	cur_return_code: u16,
 	cur_filetransfer_id: u16,
+	// NEK0-DIAG: raw incoming command queue (drained by the embedder).
+	pub raw_incoming: std::sync::Mutex<VecDeque<String>>,
 	/// If we are subscribed to the server. This will automatically subscribe to new channels.
 	subscribed: bool,
 	/// If a file stream can be opened, it gets put in here until the tcp
@@ -808,6 +810,18 @@ impl Connection {
 		}
 	}
 
+	/// NEK0-DIAG: access to the raw incoming-command queue (debug only).
+	#[cfg(feature = "unstable")]
+	pub fn raw_incoming(
+		&self,
+	) -> Result<&std::sync::Mutex<VecDeque<String>>> {
+		if let ConnectionState::Connected { con, .. } = &self.state {
+			Ok(&con.raw_incoming)
+		} else {
+			Err(Error::NotConnected)
+		}
+	}
+
 	/// Get access to the raw connection.
 	///
 	/// Fails if the connection is currently not connected to the server.
@@ -1146,6 +1160,7 @@ impl Connection {
 						client,
 						cur_return_code: 0,
 						cur_filetransfer_id: 0,
+					raw_incoming: std::sync::Mutex::new(VecDeque::new()),
 						subscribed: false,
 						filetransfers: Default::default(),
 						connection_time: OffsetDateTime::now_utc(),
@@ -1336,6 +1351,10 @@ impl ConnectedConnection {
 		&mut self, book: &mut data::Connection, stream_items: &mut VecDeque<Result<StreamItem>>,
 		options: &mut ConnectOptions, cmd: InCommandBuf,
 	) -> Option<TemporaryDisconnectReason> {
+		// NEK0-DIAG: expose raw incoming commands for file-transfer debugging.
+		if let Ok(content) = std::str::from_utf8(cmd.data().packet().content()) {
+			self.raw_incoming.lock().unwrap().push_back(content.to_string());
+		}
 		let msg = match InMessage::new(cmd.data().packet().header(), cmd.data().packet().content())
 		{
 			Ok(r) => r,

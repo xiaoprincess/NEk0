@@ -1,9 +1,10 @@
 use crate::{
-    Command, TsChannel, TsClient, TsEvent,
+    Command, TsChannel, TsClient, TsEvent, TsFtEntry,
     AUDIO_DECODERS, AUDIO_DECODERS_STEREO, AUDIO_STREAM, CB_STATS, CLIENT_BUFFERS,
-    COMMAND_TX, FRAME_SIZE, IDENTITY_STASH, PLAYED_SAMPLES, ACTIVE_CLIENT_IDS,
+    COMMAND_TX, FRAME_SIZE, FT_CLIENT_FT, FT_KIND_DOWNLOAD, FT_KIND_UPLOAD, FT_LISTS, FT_OPS,
+    FT_TASK_BY_RC, FT_TASKS, FT_TASK_SEQ, IDENTITY_STASH, PLAYED_SAMPLES, ACTIVE_CLIENT_IDS,
     RUNTIME, SFX_ARMED, SFX_DEFERRED_TEARDOWN, SFX_QUEUE, SFX_SUPPRESS_DISCONNECT,
-    STATE, SWIPE_DISCONNECT, OUTPUT_RESTART_REQUESTED,
+    STATE, SWIPE_DISCONNECT, OUTPUT_RESTART_REQUESTED, PendingFtList,
 };
 
 use futures::prelude::*;
@@ -11,13 +12,18 @@ use opus_rs::OpusDecoder;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
+use std::io::{Read as _, Write as _};
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tsclientlib::messages::c2s::*;
 use tsclientlib::{ChannelId, ClientId};
 use tsclientlib::{Connection, DisconnectOptions, Identity, OutCommandExt, StreamItem};
-use tsproto_packets::packets::{AudioData, CodecType, InAudioBuf, OutAudio};
+use tsclientlib::messages::OutMessageTrait;
+use tsproto_packets::packets::{
+    AudioData, CodecType, Direction, Flags, InAudioBuf, OutAudio, OutCommand, PacketType,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 fn to_c_str(s: String) -> *mut c_char {
@@ -41,6 +47,179 @@ fn push_diag(msg: &str) {
     let seq = DIAG_SEQ.fetch_add(1, Ordering::SeqCst);
     STATE.lock().pending_events.push_back(TsEvent::Diag {
         msg: format!("#{} {}", seq, msg),
+    });
+}
+
+// ─── File transfer helpers ──────────────────────────────────────────
+
+/// Reads a NUL-terminated C string from a raw pointer ("" for NULL).
+unsafe fn cstr_to_string(p: *const c_char) -> String {
+    unsafe {
+        if p.is_null() {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+    }
+}
+
+/// Parses a TeamSpeak return_code ("12" or "12:5") into its numeric handle.
+fn parse_return_code(rc: &str) -> Option<u16> {
+    rc.rsplit(':').next()?.parse().ok()
+}
+
+/// Normalizes a remote path into the leading-slash form the TS3 file API
+/// expects ("/" root, one slash per segment).
+fn normalize_remote_path(path: &str) -> String {
+    let trimmed = path.trim();
+    // Collapse duplicate slashes and drop trailing ones: "//a//b/" → "/a/b".
+    // Some file-area commands reject doubled slashes as an unknown path.
+    let cleaned = trimmed
+        .split('/')
+        .filter(|seg| !seg.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("/{}", cleaned)
+}
+
+/// Finds the task registered for a client-side transfer id.
+fn ft_task_id_by_client_id(client_ft_id: u16) -> Option<u32> {
+    FT_TASKS
+        .iter()
+        .find(|e| e.value().client_ft_id.load(Ordering::Relaxed) == client_ft_id)
+        .map(|e| *e.key())
+}
+
+/// Publishes a throttled progress event for a task: at most every 256 KiB or
+/// 500 ms so a big transfer does not flood the Dart poll channel.
+fn maybe_publish_ft_progress(task_id: u32, task: &crate::FtTask, force: bool) {
+    let now = Instant::now();
+    let should_push = {
+        let mut last = task.last_event.lock();
+        match *last {
+            Some(t) if !force && now.duration_since(t) < Duration::from_millis(500) => false,
+            _ => {
+                *last = Some(now);
+                true
+            }
+        }
+    };
+    if should_push {
+        STATE.lock().pending_events.push_back(TsEvent::FtProgress {
+            task_id,
+            transferred: task.done.load(Ordering::Relaxed),
+        });
+    }
+}
+
+/// Downloads the payload of an accepted ftinitdownload onto the local disk.
+/// Runs on its own OS thread with blocking IO — the connection event loop is
+/// untouched by the (potentially long) transfer.
+fn spawn_download_worker(task_id: u32, mut stream: std::net::TcpStream, total: u64) {
+    std::thread::spawn(move || {
+        let (local_path, cancel_flag) = match FT_TASKS.get(&task_id) {
+            Some(t) => (t.local_path.clone(), t.cancel.clone()),
+            None => return, // task vanished while starting
+        };
+        let result = (|| -> std::io::Result<()> {
+            if let Some(parent) = std::path::Path::new(&local_path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let mut file = std::fs::File::create(&local_path)?;
+            let mut buf = [0u8; 64 * 1024];
+            let mut received: u64 = 0;
+            loop {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    // Keep the partial file; Dart reports the cancellation.
+                    drop(file);
+                    crate::finish_ft_task(task_id, false, Some("canceled".into()));
+                    return Ok(());
+                }
+                match stream.read(&mut buf) {
+                    Ok(0) => break, // EOF — server finished sending
+                    Ok(n) => {
+                        file.write_all(&buf[..n])?;
+                        received += n as u64;
+                        FT_TASKS.get(&task_id).map(|t| {
+                            t.done.store(received, Ordering::Relaxed);
+                            maybe_publish_ft_progress(task_id, &t, false)
+                        });
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if total > 0 && received < total {
+                // Server closed early — treat as an incomplete transfer.
+                crate::finish_ft_task(
+                    task_id,
+                    false,
+                    Some(format!("incomplete transfer ({received}/{total} bytes)")),
+                );
+                return Ok(());
+            }
+            FT_TASKS.get(&task_id).map(|t| {
+                t.done.store(received, Ordering::Relaxed);
+            });
+            crate::finish_ft_task(task_id, true, None);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            crate::finish_ft_task(task_id, false, Some(format!("{}", e)));
+        }
+    });
+}
+
+/// Uploads a local file into the accepted ftinitupload stream.
+fn spawn_upload_worker(task_id: u32, mut stream: std::net::TcpStream, src: String) {
+    std::thread::spawn(move || {
+        let cancel_flag = match FT_TASKS.get(&task_id) {
+            Some(t) => t.cancel.clone(),
+            None => return,
+        };
+        let result = (|| -> std::io::Result<()> {
+            let mut file = std::fs::File::open(&src)?;
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    drop(stream); // aborts the transfer server-side
+                    crate::finish_ft_task(task_id, false, Some("canceled".into()));
+                    return Ok(());
+                }
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                stream.write_all(&buf[..n])?;
+                FT_TASKS.get(&task_id).map(|t| {
+                    let done = t
+                        .done
+                        .fetch_add(n as u64, Ordering::Relaxed)
+                        .saturating_add(n as u64);
+                    let _ = done;
+                    maybe_publish_ft_progress(task_id, &t, false);
+                });
+            }
+            stream.flush()?;
+            // All bytes handed to the OS — wait for the final transfer status:
+            // either notifystatusfiletransfer arrives first (handled by the
+            // event loop, removes the task with ok=true), or nothing comes
+            // within the grace period and we declare success ourselves.
+            for _ in 0..32 {
+                std::thread::sleep(Duration::from_millis(250));
+                if !FT_TASKS.contains_key(&task_id) {
+                    return Ok(()); // resolved by the status handler meanwhile
+                }
+                if cancel_flag.load(Ordering::Relaxed) {
+                    drop(stream);
+                    crate::finish_ft_task(task_id, false, Some("canceled".into()));
+                    return Ok(());
+                }
+            }
+            crate::finish_ft_task(task_id, true, None);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            crate::finish_ft_task(task_id, false, Some(format!("{}", e)));
+        }
     });
 }
 
@@ -1284,6 +1463,159 @@ fn maybe_trigger_sfx(
     }
 }
 
+/// Lets a hand-built packet ride the normal `send_with_result` path so
+/// return_code bookkeeping (and the MessageResult it produces) stays in one
+/// place. We serialize `cpw` exactly like the official client: present for
+/// every ft command, empty (bare key) when the channel has no password.
+struct RawCmd(OutCommand);
+
+impl OutMessageTrait for RawCmd {
+    fn to_packet(self) -> OutCommand {
+        self.0
+    }
+}
+
+/// The ft commands REQUIRE the `cpw` argument to be present even for
+/// unlocked channels (omitting it fails with 0x0603 "parameter not found").
+/// Empty is encoded as the bare key (write_arg drops a valueless `=`),
+/// matching the official client's wire format.
+fn encoded_cpw(password: &Option<String>) -> String {
+    password
+        .as_deref()
+        .map(|p| tsproto_types::crypto::encode_password(p.as_bytes()))
+        .unwrap_or_default()
+}
+
+/// Schedules the deferred finalize of a listing. The server streams the
+/// rows after the result frame, and our event pipeline may surface those
+/// rows one or two poll ticks late — so the finalize waits long enough for
+/// every straggler to accumulate, then emits everything collected.
+fn schedule_ft_list_finish(code: u16) {
+    {
+        let mut lists = FT_LISTS.lock();
+        match lists.get_mut(&code) {
+            Some(p) => {
+                if p.finalize_scheduled {
+                    return;
+                }
+                p.finalize_scheduled = true;
+            }
+            None => return,
+        }
+    }
+    crate::RUNTIME.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let pending = FT_LISTS.lock().remove(&code);
+        if let Some(pending) = pending {
+            push_diag(&format!(
+                "ft list {}: finalize entries={} result={}",
+                pending.token,
+                pending.entries.len(),
+                if pending.result_ok { "ok" } else { "error" }
+            ));
+            STATE
+                .lock()
+                .pending_events
+                .push_back(TsEvent::FtListing {
+                    token: pending.token,
+                    entries: pending.entries,
+                    error: pending.result_error,
+                });
+        }
+    });
+}
+
+/// Logs the exact wire form of a request — the fastest way to diff our
+/// traffic against what the official client sends.
+fn push_wire_diag(tag: &str, packet: &OutCommand) {
+    push_diag(&format!(
+        "ft req {}: {}",
+        tag,
+        String::from_utf8_lossy(packet.0.content())
+    ));
+}
+
+/// Drains the raw incoming-command queue the vendored lib fills (NEK0-DIAG)
+/// into the diag channel so the exact server wire order is visible.
+fn drain_raw_incoming(con: &mut Connection) {
+    // The queue lives on the inner connection state; access it through the
+    // unstable raw-client accessor is not available for Connection, so the
+    // vendored ConnectedConnection field is reached via get_state-free path:
+    // Connection::events already consumed the frames, we only need the raw
+    // strings. Use the public accessor added on ConnectionState::Connected.
+    if let Ok(raw) = con.raw_incoming() {
+        while let Some(line) = raw.lock().unwrap().pop_front() {
+            push_diag(&format!("raw in: {}", line));
+        }
+    }
+}
+
+/// Routes one event item: file-transfer payloads carry an owned TcpStream,
+/// so they are consumed here by value; everything else delegates to the
+/// catch_unwind-wrapped control handler.
+fn handle_event_item(item: StreamItem, con: &mut Connection, generation: u64) {
+    match item {
+        StreamItem::FileDownload(handle, result) => {
+            handle_file_download(handle.0, result);
+        }
+        StreamItem::FileUpload(handle, result) => {
+            handle_file_upload(handle.0, result);
+        }
+        other => handle_control_item(&other, con, generation),
+    }
+}
+
+/// The server accepted a download request and handed over the raw TCP stream
+/// carrying the file bytes; spawn the blocking worker that writes it out.
+fn handle_file_download(client_ft_id: u16, result: tsclientlib::FileDownloadResult) {
+    let total = result.size;
+    match result.stream.into_std() {
+        Ok(std_stream) => {
+            let _ = std_stream.set_nonblocking(false);
+            if let Some(task_id) = ft_task_id_by_client_id(client_ft_id) {
+                if let Some(t) = FT_TASKS.get_mut(&task_id) {
+                    t.total.store(total, Ordering::Relaxed);
+                }
+                maybe_publish_ft_progress(task_id, &FT_TASKS.get(&task_id).unwrap(), true);
+                spawn_download_worker(task_id, std_stream, total);
+            }
+        }
+        Err(e) => {
+            if let Some(task_id) = ft_task_id_by_client_id(client_ft_id) {
+                crate::finish_ft_task(
+                    task_id,
+                    false,
+                    Some(format!("transfer stream failed: {}", e)),
+                );
+            }
+        }
+    }
+}
+
+/// Our upload slot was accepted; stream the local file into it.
+fn handle_file_upload(client_ft_id: u16, result: tsclientlib::FileUploadResult) {
+    match result.stream.into_std() {
+        Ok(std_stream) => {
+            let _ = std_stream.set_nonblocking(false);
+            if let Some(task_id) = ft_task_id_by_client_id(client_ft_id) {
+                let src = FT_TASKS.get(&task_id).map(|t| t.local_path.clone());
+                if let Some(src) = src {
+                    spawn_upload_worker(task_id, std_stream, src);
+                }
+            }
+        }
+        Err(e) => {
+            if let Some(task_id) = ft_task_id_by_client_id(client_ft_id) {
+                crate::finish_ft_task(
+                    task_id,
+                    false,
+                    Some(format!("transfer stream failed: {}", e)),
+                );
+            }
+        }
+    }
+}
+
 fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64) {
     let handle_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match item {
@@ -1373,7 +1705,61 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
             }
             StreamItem::MessageEvent(msg) => {
                 use tsclientlib::messages::s2c::InMessage;
-                if let InMessage::TextMessage(txt) = msg {
+                if let InMessage::FileList(fl) = msg {
+                    // Directory listing frames of an ftgetfilelist request:
+                    // accumulate entries keyed by the echoed return_code; a
+                    // trailing error frame resolves as MessageResult below.
+                    if let Some(code) = fl.return_code.as_deref().and_then(parse_return_code) {
+                        let mut lists = FT_LISTS.lock();
+                        if let Some(pending) = lists.get_mut(&code) {
+                            let incoming = fl.iter().count();
+                            for part in fl.iter() {
+                                pending.entries.push(TsFtEntry {
+                                    name: part.name.clone(),
+                                    size: part.size,
+                                    datetime: part.date_time.unix_timestamp(),
+                                    is_file: part.is_file,
+                                });
+                            }
+                            push_diag(&format!(
+                                "ft list {}: frame +{} (total {})",
+                                pending.token,
+                                incoming,
+                                pending.entries.len()
+                            ));
+                        } else {
+                            push_diag("ft list frame for unknown return code");
+                        }
+                    }
+                } else if let InMessage::FileListFinished(fin) = msg {
+                    // Rows are streamed AFTER the result frame (observed
+                    // live); this marker says "no more rows for this
+                    // directory". It carries no return_code, so match via
+                    // the directory address, then finalize.
+                    let to_finalize: Vec<u16> = {
+                        let mut lists = FT_LISTS.lock();
+                        let mut found: Vec<u16> = Vec::new();
+                        for part in fin.iter() {
+                            for (code, p) in lists.iter_mut() {
+                                if p.cid == part.channel_id.0
+                                    && p.path == part.path
+                                    && !p.finished_seen
+                                {
+                                    p.finished_seen = true;
+                                    found.push(*code);
+                                }
+                            }
+                        }
+                        found
+                    };
+                    // Finalize OUTSIDE the lock: schedule_ft_list_finish
+                    // locks FT_LISTS itself, and parking_lot mutexes are
+                    // not reentrant — calling it under the lock freezes
+                    // the connection event loop for good.
+                    for code in to_finalize {
+                        schedule_ft_list_finish(code);
+                    }
+                } else if let InMessage::TextMessage(txt) = msg {
                     for p in txt.iter() {
                         STATE.lock().pending_events.push_back(TsEvent::TextMessage {
                             from_client: p.invoker_name.clone(),
@@ -1419,10 +1805,124 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                     }
                 }
             }
+            StreamItem::MessageResult(handle, res) => {
+                // A command answer carrying one of OUR return_codes. Resolves
+                // both pending directory listings and mkdir/delete acks; the
+                // final error frame is what ends either kind of exchange.
+                let err_text = res
+                    .as_ref()
+                    .err()
+                    .map(|e| format!("{:?} ({:#06x})", e.error, e.error as i32));
+                if let Some(op) = FT_OPS.lock().remove(&handle.0) {
+                    push_diag(&format!(
+                        "ft op {}: server said ok={} {}",
+                        op.token,
+                        res.is_ok(),
+                        err_text.as_deref().unwrap_or("")
+                    ));
+                    STATE.lock().pending_events.push_back(TsEvent::FtOp {
+                        token: op.token,
+                        ok: res.is_ok(),
+                        error: err_text.clone(),
+                    });
+                }
+                // A rejected ftinitdownload/ftinitupload answers with a plain
+                // error frame; map it back to its task so the job fails with
+                // the server's real reason instead of hanging.
+                if let Some(task_id) = FT_TASK_BY_RC.lock().remove(&handle.0) {
+                    if let Some(e) = res.as_ref().err() {
+                        push_diag(&format!("ft task {} rejected: {:?}", task_id, e.error));
+                        crate::finish_ft_task(
+                            task_id,
+                            false,
+                            Some(format!("{:?} ({:#06x})", e.error, e.error as i32)),
+                        );
+                    }
+                }
+                // Record the result on the pending listing — but do NOT
+                // complete it here: the server streams the rows AFTER this
+                // frame (observed live), so wait for the finished marker.
+                let list_finalize_now = {
+                    let mut lists = FT_LISTS.lock();
+                    match lists.get_mut(&handle.0) {
+                        Some(pending) => {
+                            // Known TS3 server quirk: listing a channel whose
+                            // file storage row does not exist yet answers with
+                            // the database-empty-result-set error instead of an
+                            // empty-but-ok list (official clients render that as
+                            // an empty folder). Scope the tolerance to listings
+                            // only: mkdir, delete and transfers keep surfacing
+                            // this error.
+                            let empty_result_quirk = err_text
+                                .as_deref()
+                                .is_some_and(|e| {
+                                    e.to_ascii_lowercase().contains("databaseemptyresult")
+                                });
+                            pending.result_seen = true;
+                            pending.result_ok = res.is_ok() || empty_result_quirk;
+                            pending.result_error = if empty_result_quirk {
+                                None
+                            } else {
+                                err_text.clone()
+                            };
+                            // A rejected request never streams rows — the
+                            // exchange is over without a finished marker.
+                            !res.is_ok()
+                        }
+                        None => false,
+                    }
+                };
+                // Finalize OUTSIDE the lock: schedule_ft_list_finish locks
+                // FT_LISTS itself, and parking_lot mutexes are not
+                // reentrant — calling it under the lock freezes the
+                // connection event loop for good.
+                if list_finalize_now {
+                    schedule_ft_list_finish(handle.0);
+                }
+            }
+            StreamItem::FiletransferFailed(handle, err) => {
+                // Carries the transfer status from notifystatusfiletransfer.
+                // Status Ok confirms an upload; any other status (or a TCP
+                // level failure) fails the matching task. Downloads decide
+                // their own outcome in the worker — ignore Ok there so an
+                // early status cannot remove a task still transferring.
+                let ok_status = matches!(
+                    err,
+                    tsclientlib::Error::CommandError(ce)
+                        if ce.error == tsclientlib::TsError::Ok
+                );
+                let desc = match err {
+                    tsclientlib::Error::CommandError(ce) => {
+                        format!("{:?} ({:#06x})", ce.error, ce.error as i32)
+                    }
+                    other => format!("{}", other),
+                };
+                if let Some(task_id) = ft_task_id_by_client_id(handle.0) {
+                    let kind = FT_TASKS.get(&task_id).map(|t| t.kind);
+                    match kind {
+                        Some(k) if k == FT_KIND_UPLOAD && ok_status => {
+                            crate::finish_ft_task(task_id, true, None);
+                        }
+                        _ => {
+                            let canceled = FT_TASKS
+                                .get(&task_id)
+                                .map(|t| t.cancel.load(Ordering::Relaxed))
+                                .unwrap_or(false);
+                            crate::finish_ft_task(
+                                task_id,
+                                false,
+                                Some(if canceled { "canceled".into() } else { desc }),
+                            );
+                        }
+                    }
+                }
+            }
             StreamItem::DisconnectedTemporarily(r) => {
                 // On reconnect the library replays the whole roster as fresh
                 // additions; disarm so that resync stays silent.
                 SFX_ARMED.store(false, Ordering::Relaxed);
+                // Pending directory listings will never be answered now.
+                FT_LISTS.lock().clear();
                 // The output stream stays up during a temporary disconnect
                 // (the library reconnects on its own), so the connection_lost
                 // sound plays through it normally.
@@ -1486,7 +1986,11 @@ async fn event_loop(
                     });
                 STATE.lock().connected = false;
                 STATE.lock().disconnect_requested = false;
-                *COMMAND_TX.lock() = None;
+                // File transfer bookkeeping dies with the connection: pending directory
+            // listings are gone, and active workers notice via their sockets.
+            FT_LISTS.lock().clear();
+            FT_OPS.lock().clear();
+            *COMMAND_TX.lock() = None;
             }
             return;
         }
@@ -1585,6 +2089,199 @@ async fn event_loop(
                     let _ =
                         OutClientPokeRequestMessage::new(&mut std::iter::once(part)).send(&mut con);
                 }
+                Command::FtList { cid, path, password, token } => {
+                    // Hand-built so `cpw` is omitted for unlocked channels
+                    // (see RawCmd above).
+                    let mut packet = OutCommand::new(
+                        Direction::C2S,
+                        Flags::empty(),
+                        PacketType::Command,
+                        "ftgetfilelist",
+                    );
+                    packet.write_arg("cid", &cid);
+                    packet.write_arg("cpw", &encoded_cpw(&password));
+                    packet.write_arg("path", &path);
+                    push_diag(&format!("ft list {}: request cid={} path={}", token, cid, path));
+                    push_wire_diag(&format!("list {}", token), &packet);
+                    match RawCmd(packet).send_with_result(&mut con) {
+                        Ok(handle) => {
+                            // Marks the point after the send: if the next
+                            // log line is missing, the loop died inside the
+                            // send itself rather than in the reply handling.
+                            push_diag(&format!(
+                                "ft list {}: sent (rc={})",
+                                token, handle.0
+                            ));
+                            let mut lists = FT_LISTS.lock();
+                            lists.insert(
+                                handle.0,
+                                PendingFtList {
+                                    token,
+                                    entries: Vec::new(),
+                                    created: Instant::now(),
+                                    cid,
+                                    path,
+                                    result_seen: false,
+                                    result_ok: false,
+                                    result_error: None,
+                                    finished_seen: false,
+                                    finalize_scheduled: false,
+                                },
+                            );
+                            // Safety valve: drop unanswered pendings after
+                            // half a minute (normally every request gets its
+                            // trailing error frame).
+                            let stale: Vec<u16> = lists
+                                .iter()
+                                .filter(|(_, p)| p.created.elapsed() > Duration::from_secs(30))
+                                .map(|(k, _)| *k)
+                                .collect();
+                            for k in stale {
+                                lists.remove(&k);
+                            }
+                        }
+                        Err(e) => {
+                            push_diag(&format!("ft list {}: send failed: {}", token, e));
+                            STATE
+                                .lock()
+                                .pending_events
+                                .push_back(TsEvent::FtListing {
+                                    token,
+                                    entries: vec![],
+                                    error: Some(format!("{}", e)),
+                                });
+                        }
+                    }
+                }
+                Command::FtCreateDir { cid, dirname, password, token } => {
+                    push_diag(&format!("ft mkdir {}: dirname={}", token, dirname));
+                    let mut packet = OutCommand::new(
+                        Direction::C2S,
+                        Flags::empty(),
+                        PacketType::Command,
+                        "ftcreatedir",
+                    );
+                    packet.write_arg("cid", &cid);
+                    packet.write_arg("cpw", &encoded_cpw(&password));
+                    packet.write_arg("dirname", &dirname);
+                    push_wire_diag(&format!("mkdir {}", token), &packet);
+                    match RawCmd(packet).send_with_result(&mut con) {
+                        Ok(handle) => {
+                            FT_OPS.lock().insert(handle.0, crate::PendingFtOp { token });
+                        }
+                        Err(e) => {
+                            push_diag(&format!("ft mkdir {}: send failed: {}", token, e));
+                            STATE.lock().pending_events.push_back(TsEvent::FtOp {
+                                token,
+                                ok: false,
+                                error: Some(format!("{}", e)),
+                            });
+                        }
+                    }
+                }
+                Command::FtDelete { cid, names, password, token } => {
+                    push_diag(&format!("ft delete {}: {} path(s)", token, names.len()));
+                    // Every deleted entry is one part of a single ftdeletefile.
+                    let mut packet = OutCommand::new(
+                        Direction::C2S,
+                        Flags::empty(),
+                        PacketType::Command,
+                        "ftdeletefile",
+                    );
+                    let cpw = encoded_cpw(&password);
+                    for (i, name) in names.iter().enumerate() {
+                        if i > 0 {
+                            packet.start_new_part();
+                        }
+                        packet.write_arg("cid", &cid);
+                        packet.write_arg("cpw", &cpw);
+                        packet.write_arg("name", name);
+                    }
+                    push_wire_diag(&format!("delete {}", token), &packet);
+                    match RawCmd(packet).send_with_result(&mut con) {
+                        Ok(handle) => {
+                            FT_OPS.lock().insert(handle.0, crate::PendingFtOp { token });
+                        }
+                        Err(e) => {
+                            push_diag(&format!("ft delete {}: send failed: {}", token, e));
+                            STATE.lock().pending_events.push_back(TsEvent::FtOp {
+                                token,
+                                ok: false,
+                                error: Some(format!("{}", e)),
+                            });
+                        }
+                    }
+                }
+                Command::FtDownload { cid, path, password, task_id } => {
+                    push_diag(&format!(
+                        "ft download task={} cid={} path={}",
+                        task_id, cid, path
+                    ));
+                    // Hand-built ftinitdownload (cpw omitted when absent, own
+                    // transfer id — see FT_CLIENT_FT).
+                    let ftid = FT_CLIENT_FT.fetch_add(1, Ordering::SeqCst);
+                    if let Some(t) = FT_TASKS.get_mut(&task_id) {
+                        t.client_ft_id.store(ftid, Ordering::Relaxed);
+                    }
+                    let mut packet = OutCommand::new(
+                        Direction::C2S,
+                        Flags::empty(),
+                        PacketType::Command,
+                        "ftinitdownload",
+                    );
+                    packet.write_arg("clientftfid", &ftid);
+                    packet.write_arg("name", &path);
+                    packet.write_arg("cid", &cid);
+                    packet.write_arg("cpw", &encoded_cpw(&password));
+                    packet.write_arg("seekpos", &0u64);
+                    packet.write_arg("proto", &1u8);
+                    push_wire_diag(&format!("download task={}", task_id), &packet);
+                    match RawCmd(packet).send_with_result(&mut con) {
+                        Ok(handle) => {
+                            FT_TASK_BY_RC.lock().insert(handle.0, task_id);
+                        }
+                        Err(e) => {
+                            crate::finish_ft_task(task_id, false, Some(format!("{}", e)));
+                        }
+                    }
+                }
+                Command::FtUpload { cid, path, password, task_id } => {
+                    push_diag(&format!(
+                        "ft upload task={} cid={} path={}",
+                        task_id, cid, path
+                    ));
+                    let total = FT_TASKS
+                        .get(&task_id)
+                        .map(|t| t.total.load(std::sync::atomic::Ordering::Relaxed))
+                        .unwrap_or(0);
+                    let ftid = FT_CLIENT_FT.fetch_add(1, Ordering::SeqCst);
+                    if let Some(t) = FT_TASKS.get_mut(&task_id) {
+                        t.client_ft_id.store(ftid, Ordering::Relaxed);
+                    }
+                    let mut packet = OutCommand::new(
+                        Direction::C2S,
+                        Flags::empty(),
+                        PacketType::Command,
+                        "ftinitupload",
+                    );
+                    packet.write_arg("clientftfid", &ftid);
+                    packet.write_arg("name", &path);
+                    packet.write_arg("cid", &cid);
+                    packet.write_arg("cpw", &encoded_cpw(&password));
+                    packet.write_arg("size", &total);
+                    packet.write_arg("overwrite", &1u8);
+                    packet.write_arg("resume", &0u8);
+                    packet.write_arg("proto", &1u8);
+                    push_wire_diag(&format!("upload task={}", task_id), &packet);
+                    match RawCmd(packet).send_with_result(&mut con) {
+                        Ok(handle) => {
+                            FT_TASK_BY_RC.lock().insert(handle.0, task_id);
+                        }
+                        Err(e) => {
+                            crate::finish_ft_task(task_id, false, Some(format!("{}", e)));
+                        }
+                    }
+                }
                 Command::Disconnect => {
                     // Queue the disconnected sound BEFORE the disconnect
                     // handshake (see do_disconnect above: the library waits
@@ -1602,7 +2299,11 @@ async fn event_loop(
                         });
                         s.connected = false;
                         drop(s);
-                        *COMMAND_TX.lock() = None;
+                        // File transfer bookkeeping dies with the connection: pending directory
+            // listings are gone, and active workers notice via their sockets.
+            FT_LISTS.lock().clear();
+            FT_OPS.lock().clear();
+            *COMMAND_TX.lock() = None;
                     }
                     return;
                 }
@@ -1717,7 +2418,11 @@ async fn event_loop(
                         reason: format!("Connection error: {}", e),
                     });
                     schedule_sfx_teardown(SFX_ERROR);
-                    *COMMAND_TX.lock() = None;
+                    // File transfer bookkeeping dies with the connection: pending directory
+            // listings are gone, and active workers notice via their sockets.
+            FT_LISTS.lock().clear();
+            FT_OPS.lock().clear();
+            *COMMAND_TX.lock() = None;
                 }
                 // The stream errored out (same termination as Ok(None)):
                 // return directly instead of falling into 2b, which would
@@ -1746,7 +2451,11 @@ async fn event_loop(
                         // (disconnected is reserved for explicit user exit).
                         schedule_sfx_teardown(SFX_CONNECTION_LOST);
                     }
-                    *COMMAND_TX.lock() = None;
+                    // File transfer bookkeeping dies with the connection: pending directory
+            // listings are gone, and active workers notice via their sockets.
+            FT_LISTS.lock().clear();
+            FT_OPS.lock().clear();
+            *COMMAND_TX.lock() = None;
                 }
                 // The stream is truly over — do not fall through to the
                 // drain loop (2b), which would poll the finished stream again
@@ -1785,7 +2494,11 @@ async fn event_loop(
                             reason: format!("Connection error: {}", e),
                         });
                         schedule_sfx_teardown(SFX_ERROR);
-                        *COMMAND_TX.lock() = None;
+                        // File transfer bookkeeping dies with the connection: pending directory
+            // listings are gone, and active workers notice via their sockets.
+            FT_LISTS.lock().clear();
+            FT_OPS.lock().clear();
+            *COMMAND_TX.lock() = None;
                     }
                     // The stream errored out — return immediately instead of
                     // looping, so no extra sound is queued on top of the
@@ -1803,11 +2516,14 @@ async fn event_loop(
         // 2c. Process deferred non-audio events. This runs after 2b so the
         // `con.events()` borrow has been released.
         for item in deferred_events {
-            handle_control_item(&item, &mut con, generation);
+            handle_event_item(item, &mut con, generation);
         }
         if let Some(item) = deferred {
-            handle_control_item(&item, &mut con, generation);
+            handle_event_item(item, &mut con, generation);
         }
+
+        // NEK0-DIAG: surface raw incoming commands for ft debugging.
+        drain_raw_incoming(&mut con);
 
         // Stream ended cleanly: finalize. The deferred events above were
         // already processed, so a kick/ban has set SFX_SUPPRESS_DISCONNECT
@@ -1832,7 +2548,11 @@ async fn event_loop(
                     // (disconnected is reserved for explicit user exit).
                     schedule_sfx_teardown(SFX_CONNECTION_LOST);
                 }
-                *COMMAND_TX.lock() = None;
+                // File transfer bookkeeping dies with the connection: pending directory
+            // listings are gone, and active workers notice via their sockets.
+            FT_LISTS.lock().clear();
+            FT_OPS.lock().clear();
+            *COMMAND_TX.lock() = None;
             }
             return;
         }
@@ -2267,6 +2987,280 @@ pub extern "C" fn ts_send_poke(client_id: u16, msg: *const c_char) -> u8 {
         }
     } else {
         0
+    }
+}
+
+// ─── File transfers ─────────────────────────────────────────────────
+
+/// Last path segment of a remote path ("/" root maps to itself).
+fn remote_basename(path: &str) -> String {
+    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("/").to_string()
+}
+
+/// Registers a transfer task so Dart can observe its lifecycle; the protocol
+/// transfer id is bound later by the event loop when the request went out.
+fn ft_new_task(kind: u8, name: String, local_path: String, total: u64) -> u32 {
+    let task_id = FT_TASK_SEQ.fetch_add(1, Ordering::SeqCst);
+    FT_TASKS.insert(
+        task_id,
+        Arc::new(crate::FtTask {
+            kind,
+            name,
+            local_path,
+            total: std::sync::atomic::AtomicU64::new(total),
+            done: std::sync::atomic::AtomicU64::new(0),
+            cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            // Placeholder until the event loop binds the protocol id.
+            client_ft_id: std::sync::atomic::AtomicU16::new(u16::MAX),
+            last_event: parking_lot::Mutex::new(None),
+        }),
+    );
+    task_id
+}
+
+/// Pushes the initial ft_started event for a freshly registered task.
+fn ft_push_started(task_id: u32) {
+    if let Some(t) = FT_TASKS.get(&task_id) {
+        let event = TsEvent::FtStarted {
+            task_id,
+            kind: t.kind,
+            name: t.name.clone(),
+            total: t.total.load(Ordering::Relaxed),
+        };
+        STATE.lock().pending_events.push_back(event);
+    }
+}
+
+/// True while a live connection with a running event loop exists — a
+/// prerequisite for queueing any file transfer command.
+fn ft_ready() -> bool {
+    STATE.lock().connected && crate::EVENT_LOOP_ALIVE.load(Ordering::SeqCst)
+}
+
+/// The plaintext password carried by ft commands (None when empty).
+fn ft_password(pw: *const c_char) -> Option<String> {
+    let s = unsafe { cstr_to_string(pw) };
+    if s.is_empty() { None } else { Some(s) }
+}
+
+#[no_mangle]
+pub extern "C" fn ts_ft_list(
+    cid: u32,
+    path: *const c_char,
+    pw: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    if !ft_ready() || token.is_null() {
+        return 0;
+    }
+    let path = normalize_remote_path(&unsafe { cstr_to_string(path) });
+    if !valid_remote_path(&path) {
+        return 0;
+    }
+    let token = unsafe { cstr_to_string(token) };
+    if token.is_empty() {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    match tx.as_ref().map(|tx| {
+        tx.send(Command::FtList {
+            cid: cid as u64,
+            path,
+            password: ft_password(pw),
+            token,
+        })
+    }) {
+        Some(Ok(())) => 1,
+        _ => 0,
+    }
+}
+
+/// Remote paths are rooted at "/" and must not escape via ".." segments.
+/// The bare root "/" is a valid address (channel storage top level).
+fn valid_remote_path(path: &str) -> bool {
+    if path == "/" {
+        return true;
+    }
+    path.starts_with('/')
+        && !path.contains('\0')
+        && !path.split('/').any(|seg| seg == "..")
+}
+
+#[no_mangle]
+pub extern "C" fn ts_ft_mkdir(
+    cid: u32,
+    path: *const c_char,
+    pw: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    if !ft_ready() || token.is_null() {
+        return 0;
+    }
+    // The full remote directory address (".../newname"), never a bare name.
+    let dirname = normalize_remote_path(&unsafe { cstr_to_string(path) });
+    if !valid_remote_path(&dirname) {
+        return 0;
+    }
+    let token = unsafe { cstr_to_string(token) };
+    if token.is_empty() {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    match tx.as_ref().map(|tx| {
+        tx.send(Command::FtCreateDir {
+            cid: cid as u64,
+            dirname,
+            password: ft_password(pw),
+            token,
+        })
+    }) {
+        Some(Ok(())) => 1,
+        _ => 0,
+    }
+}
+
+/// Deletes one or more entries in one ftdeletefile command. `names_json` is
+/// a JSON array of COMPLETE remote paths, e.g. `["\/dir\/a.txt","\/old"]`.
+/// Directories are removed recursively by the server.
+#[no_mangle]
+pub extern "C" fn ts_ft_delete(
+    cid: u32,
+    names_json: *const c_char,
+    pw: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    if !ft_ready() || token.is_null() {
+        return 0;
+    }
+    let names_raw = unsafe { cstr_to_string(names_json) };
+    let raw: Vec<String> = match serde_json::from_str(&names_raw) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    if raw.is_empty() {
+        return 0;
+    }
+    let names: Vec<String> = raw
+        .iter()
+        .map(|n| normalize_remote_path(n))
+        .filter(|n| valid_remote_path(n))
+        .collect();
+    if names.is_empty() {
+        return 0;
+    }
+    let token = unsafe { cstr_to_string(token) };
+    if token.is_empty() {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    match tx.as_ref().map(|tx| {
+        tx.send(Command::FtDelete {
+            cid: cid as u64,
+            names,
+            password: ft_password(pw),
+            token,
+        })
+    }) {
+        Some(Ok(())) => 1,
+        _ => 0,
+    }
+}
+
+/// Starts downloading a remote file into `dest` (local absolute path).
+/// Returns the task id (>0) for progress/cancel tracking, 0 when not queued.
+#[no_mangle]
+pub extern "C" fn ts_ft_download(
+    cid: u32,
+    path: *const c_char,
+    dest: *const c_char,
+    pw: *const c_char,
+) -> u32 {
+    if !ft_ready() || dest.is_null() {
+        return 0;
+    }
+    let path = normalize_remote_path(&unsafe { cstr_to_string(path) });
+    if !valid_remote_path(&path) {
+        return 0;
+    }
+    let dest = unsafe { cstr_to_string(dest) };
+    if dest.is_empty() {
+        return 0;
+    }
+    let name = remote_basename(&path);
+    let task_id = ft_new_task(FT_KIND_DOWNLOAD, name.clone(), dest, 0);
+    ft_push_started(task_id);
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::FtDownload {
+                cid: cid as u64,
+                path,
+                password: ft_password(pw),
+                task_id,
+            })
+            .is_ok()
+        {
+            return task_id;
+        }
+    }
+    // Event loop unreachable — fail the task immediately so no job hangs.
+    crate::finish_ft_task(task_id, false, Some("event loop unavailable".into()));
+    task_id
+}
+
+/// Starts uploading the local file `src` to the remote path. Returns the
+/// task id (>0), 0 when not queued (e.g. missing source file).
+#[no_mangle]
+pub extern "C" fn ts_ft_upload(
+    cid: u32,
+    path: *const c_char,
+    src: *const c_char,
+    pw: *const c_char,
+) -> u32 {
+    if !ft_ready() || src.is_null() {
+        return 0;
+    }
+    let path = normalize_remote_path(&unsafe { cstr_to_string(path) });
+    if !valid_remote_path(&path) {
+        return 0;
+    }
+    let src = unsafe { cstr_to_string(src) };
+    let meta = std::fs::metadata(&src);
+    // Only existing local files are accepted; zero-byte files are fine.
+    if src.is_empty() || meta.as_ref().map(|m| !m.is_file()).unwrap_or(true) {
+        return 0;
+    }
+    let total = meta.map(|m| m.len()).unwrap_or(0);
+    let name = remote_basename(&path);
+    let task_id = ft_new_task(FT_KIND_UPLOAD, name.clone(), src.clone(), total);
+    ft_push_started(task_id);
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::FtUpload {
+                cid: cid as u64,
+                path,
+                password: ft_password(pw),
+                task_id,
+            })
+            .is_ok()
+        {
+            return task_id;
+        }
+    }
+    crate::finish_ft_task(task_id, false, Some("event loop unavailable".into()));
+    task_id
+}
+
+/// Requests cancellation of an active transfer (cooperative flag).
+#[no_mangle]
+pub extern "C" fn ts_ft_cancel(task_id: u32) -> u8 {
+    match FT_TASKS.get(&task_id) {
+        Some(t) => {
+            t.cancel.store(true, Ordering::Relaxed);
+            1
+        }
+        None => 0,
     }
 }
 

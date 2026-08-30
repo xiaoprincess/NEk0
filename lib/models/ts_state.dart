@@ -12,6 +12,7 @@ import '../models/server.dart';
 import '../services/ts_ffi.dart';
 import '../services/audio_service.dart';
 import '../services/foreground_service.dart';
+import '../services/ft_service.dart';
 
 // ─── Immutable State ────────────────────────────────────────────────
 
@@ -422,6 +423,16 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
             .toList();
         state = state.copyWith(channels: newChannels, clients: newClients);
         _refreshNotification();
+        break;
+
+      // File-transfer events are routed to their own service so they never
+      // touch the connection state object (no global rebuild churn).
+      case 'ft_listing':
+      case 'ft_started':
+      case 'ft_progress':
+      case 'ft_done':
+      case 'ft_op':
+        FtTransferService.instance.handleEvent(event);
         break;
     }
   }

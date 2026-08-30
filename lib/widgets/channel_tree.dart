@@ -10,6 +10,11 @@ class ChannelTree extends StatefulWidget {
   // e.g. to prompt for a password before joining.
   final ValueChanged<TsChannel> onChannelTap;
 
+  /// Invoked on a long press — the caller decides what that means (usually:
+  /// open the per-channel menu). Swap semantics with [onChannelTap] come
+  /// from the settings' gesture option, not from this widget.
+  final ValueChanged<TsChannel>? onChannelMenu;
+
   /// Whether a password was already entered for this channel during the
   /// session (rendered as an open lock). Null = never ask/known state,
   /// e.g. while disconnected.
@@ -20,6 +25,7 @@ class ChannelTree extends StatefulWidget {
     required this.channels,
     this.selectedChannelId,
     required this.onChannelTap,
+    this.onChannelMenu,
     this.sessionPasswordKnown,
   });
 
@@ -73,6 +79,9 @@ class _ChannelTreeState extends State<ChannelTree> {
                 setState(() => _expanded.add(channel.id));
               }
             },
+            onLongPress: widget.onChannelMenu == null
+                ? null
+                : () => widget.onChannelMenu!(channel),
             child: Padding(
               padding: EdgeInsets.only(
                 left: 8.0 + depth * 20.0,
