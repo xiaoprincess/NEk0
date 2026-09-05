@@ -328,6 +328,10 @@ pub struct TsClient {
     pub is_talking: bool,
     pub volume: f32,
     pub uid: Option<String>,
+    /// MD5 hash of the client's avatar, pushed by the server
+    /// (`client_flag_avatar`). `None` = the client has no avatar set. Also
+    /// the cache key on the Dart side (content-addressed).
+    pub avatar_hash: Option<String>,
     /// The client's database id (cldbid) used by group/permission commands.
     /// 0 while the server has not announced it yet.
     pub database_id: u64,

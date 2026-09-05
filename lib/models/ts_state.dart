@@ -13,6 +13,7 @@ import '../models/server.dart';
 import '../l10n/generated/app_localizations.dart';
 import '../services/ts_ffi.dart';
 import '../services/audio_service.dart';
+import '../services/avatar_cache.dart';
 import '../services/foreground_service.dart';
 import '../services/ft_service.dart';
 
@@ -300,6 +301,9 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
           state = state.copyWith(clients: clients);
         }
       } catch (_) {} // ignore parse errors during refresh
+      // Queue downloads for newly seen client avatars (no-op when all
+      // hashes are already cached/queued/failed).
+      ref.read(avatarCacheProvider.notifier).updateFromClients(state.clients);
       // Apply saved per-client volumes (UID-keyed) to any client whose volume
       // differs from the saved value. Runs on every refresh, so it also covers
       // late joiners and the brief window where a UID is not yet known.
@@ -340,6 +344,9 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
           selectedChannelId: joinedChannelId,
         );
 
+        // Kick off avatar downloads right away (the poll loop would catch
+        // them on its next tick anyway).
+        ref.read(avatarCacheProvider.notifier).updateFromClients(clients);
         // Auto-start audio playback (listening is always on in Teamspeak)
         _audioService = AudioService();
         _audioService!.onMicLevel = (double rms) {
@@ -377,6 +384,7 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         _audioService = null;
         ForegroundService.stop();
         _channelPasswords.clear();
+        ref.read(avatarCacheProvider.notifier).reset();
         for (final c in _permCompleters.values) {
           c.complete(_l10n?.permNotConnected ?? 'Not connected');
         }

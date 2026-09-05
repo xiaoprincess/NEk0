@@ -2287,6 +2287,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "arrayvec",
+ "base64",
  "cpal",
  "crossbeam",
  "dashmap",

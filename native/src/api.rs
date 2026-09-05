@@ -8,6 +8,7 @@ use crate::{
 };
 
 use futures::prelude::*;
+use base64::prelude::*;
 use opus_rs::OpusDecoder;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -301,6 +302,12 @@ fn refresh_from_book(book: &tsclientlib::data::Connection) -> (Vec<TsChannel>, V
                 nickname: c.name.clone(),
                 channel_id: c.channel.0 as u32,
                 uid,
+                // Empty hash = the server announces no avatar for this client.
+                avatar_hash: if c.avatar_hash.is_empty() {
+                    None
+                } else {
+                    Some(c.avatar_hash.clone())
+                },
                 database_id,
                 away: c.away_message.is_some(),
                 input_muted: c.input_muted,
@@ -4009,6 +4016,55 @@ pub extern "C" fn ts_ft_download(
                 cid: cid as u64,
                 path,
                 password: ft_password(pw),
+                task_id,
+            })
+            .is_ok()
+        {
+            return task_id;
+        }
+    }
+    // Event loop unreachable — fail the task immediately so no job hangs.
+    crate::finish_ft_task(task_id, false, Some("event loop unavailable".into()));
+    task_id
+}
+
+/// Starts downloading a client's avatar into `dest` (local absolute path).
+/// The remote path follows the TS3 convention: `/avatar_<uid>` where the uid
+/// is base64-decoded and hex-encoded with the alphabet [a-p]
+/// (`Uid::as_avatar`). Avatars live in the channel-0 file storage without a
+/// password. Returns the task id (>0) for progress/cancel tracking, 0 when
+/// not queued (not connected, malformed uid).
+#[no_mangle]
+pub extern "C" fn ts_download_avatar(uid: *const c_char, dest: *const c_char) -> u32 {
+    if !ft_ready() || dest.is_null() {
+        return 0;
+    }
+    let uid = unsafe { cstr_to_string(uid) };
+    let raw = match BASE64_STANDARD.decode(uid.as_bytes()) {
+        Ok(raw) => raw,
+        Err(_) => return 0,
+    };
+    let path = normalize_remote_path(&format!(
+        "/avatar_{}",
+        tsproto_types::Uid::from_bytes(&raw).as_avatar()
+    ));
+    if !valid_remote_path(&path) {
+        return 0;
+    }
+    let dest = unsafe { cstr_to_string(dest) };
+    if dest.is_empty() {
+        return 0;
+    }
+    let name = remote_basename(&path);
+    let task_id = ft_new_task(FT_KIND_DOWNLOAD, name.clone(), dest, 0);
+    ft_push_started(task_id);
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::FtDownload {
+                cid: 0,
+                path,
+                password: None,
                 task_id,
             })
             .is_ok()

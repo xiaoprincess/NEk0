@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,6 +12,7 @@ import '../models/client.dart';
 import '../models/group.dart';
 import '../models/privilege.dart';
 import '../models/ts_state.dart';
+import '../services/avatar_cache.dart';
 import '../services/foreground_service.dart';
 import '../services/ts_ffi.dart';
 import '../widgets/channel_password_dialog.dart';
@@ -678,10 +681,40 @@ class _ClientVolumeSheetState extends State<_ClientVolumeSheet> {
           children: [
             Row(
               children: [
-                Icon(
-                  c.isTalking ? Icons.mic : Icons.person,
-                  color: c.isTalking ? Colors.blue : Colors.grey,
-                  size: 20,
+                // The client's avatar when one is set (talking = blue ring);
+                // the fallback mic/person icon otherwise.
+                Consumer(
+                  builder: (context, ref, _) {
+                    final avatarPath = ref.watch(
+                      avatarCacheProvider,
+                    )[c.avatarHash];
+                    if (avatarPath == null) {
+                      return Icon(
+                        c.isTalking ? Icons.mic : Icons.person,
+                        color: c.isTalking ? Colors.blue : Colors.grey,
+                        size: 20,
+                      );
+                    }
+                    return Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: c.isTalking ? Colors.blue : Colors.transparent,
+                          width: 2,
+                        ),
+                      ),
+                      child: ClipOval(
+                        child: Image.file(
+                          File(avatarPath),
+                          fit: BoxFit.cover,
+                          filterQuality: FilterQuality.low,
+                          gaplessPlayback: true,
+                        ),
+                      ),
+                    );
+                  },
                 ),
                 const SizedBox(width: 8),
                 Expanded(

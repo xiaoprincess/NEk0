@@ -29,6 +29,9 @@ arc-swap = "1"
 # `time::Duration` for the ban command (OutBanClientPart.time). Already in the
 # lockfile via tsclientlib; only the Duration type is used, no extra features.
 time = "0.3"
+# Decoding the wire-format uid into raw bytes so `Uid::as_avatar` can build
+# the avatar file path. Already in the lockfile via tsproto-types.
+base64 = "0.22"
 
 [patch."https://github.com/ReSpeak/tsclientlib.git"]
 tsclientlib = { path = "local_tsclientlib/tsclientlib" }

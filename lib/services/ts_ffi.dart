@@ -172,6 +172,10 @@ typedef _FtUploadDart =
 typedef _FtCancelNative = Uint8 Function(Uint32);
 typedef _FtCancelDart = int Function(int);
 
+// ts_download_avatar(uid, dest_local_path) -> task_id
+typedef _DownloadAvatarNative = Uint32 Function(Pointer<Utf8>, Pointer<Utf8>);
+typedef _DownloadAvatarDart = int Function(Pointer<Utf8>, Pointer<Utf8>);
+
 // ─── Permission management ──────────────────────────────────────────
 
 // ts_get_server_groups() / ts_get_channel_groups() -> *char (JSON array)
@@ -329,6 +333,10 @@ final _ftUpload = _lib.lookupFunction<_FtUploadNative, _FtUploadDart>(
 final _ftCancel = _lib.lookupFunction<_FtCancelNative, _FtCancelDart>(
   'ts_ft_cancel',
 );
+final _downloadAvatar = _lib
+    .lookupFunction<_DownloadAvatarNative, _DownloadAvatarDart>(
+      'ts_download_avatar',
+    );
 final _getServerGroups = _lib.lookupFunction<_GetGroupsNative, _GetGroupsDart>(
   'ts_get_server_groups',
 );
@@ -721,6 +729,21 @@ class TsNative {
   /// Cancels an active transfer task (cooperative — some bytes may already
   /// be on disk / on the wire).
   static bool ftCancel(int taskId) => _ftCancel(taskId) != 0;
+
+  /// Starts downloading a client's avatar to a local absolute path. Returns
+  /// a task id for completion tracking, or 0 when the request could not
+  /// start (not connected / malformed uid).
+  static int downloadAvatar(String uid, String destLocalPath) {
+    debugLog('downloadAvatar($uid)');
+    final u = _strToPtr(uid);
+    final d = _strToPtr(destLocalPath);
+    try {
+      return _downloadAvatar(u, d);
+    } finally {
+      malloc.free(u);
+      malloc.free(d);
+    }
+  }
 
   // ─── Permission management ────────────────────────────────────────
 

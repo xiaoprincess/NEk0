@@ -1,15 +1,19 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/generated/app_localizations.dart';
 import '../models/client.dart';
 import '../models/group.dart';
 import '../models/privilege.dart';
+import '../services/avatar_cache.dart';
 
 /// A single client row: status icon (+ talking dot), nickname and the
 /// identity/status badges. Rendered nested under its channel inside the
 /// channel tree, so [channelNeededTalkPower] must be the row's OWN channel's
 /// `needed_talk_power` — talk power is per channel, not global.
-class ClientRow extends StatelessWidget {
+class ClientRow extends ConsumerWidget {
   final TsClient client;
 
   /// The client's channel restricts talking when > 0; only then is a
@@ -37,8 +41,9 @@ class ClientRow extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final al = AppLocalizations.of(context);
+    final avatarPath = ref.watch(avatarCacheProvider)[client.avatarHash];
     return ListTile(
       dense: true,
       contentPadding: EdgeInsets.only(left: indent, right: 16),
@@ -48,7 +53,25 @@ class ClientRow extends StatelessWidget {
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            Icon(_clientIcon(client), size: 18, color: _clientColor(client)),
+            if (avatarPath != null)
+              // Away/muted clients keep the dimmed look their status icon had.
+              Opacity(
+                opacity: client.away || client.inputMuted || client.outputMuted
+                    ? 0.4
+                    : 1.0,
+                child: ClipOval(
+                  child: Image.file(
+                    File(avatarPath),
+                    width: 20,
+                    height: 20,
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.low,
+                    gaplessPlayback: true,
+                  ),
+                ),
+              )
+            else
+              Icon(_clientIcon(client), size: 18, color: _clientColor(client)),
             if (client.isTalking)
               const Positioned(
                 right: 0,

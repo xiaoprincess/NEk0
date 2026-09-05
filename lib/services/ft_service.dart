@@ -421,6 +421,33 @@ class FtTransferService extends ChangeNotifier {
     }
   }
 
+  /// Tracks a transfer Rust already started (e.g. an avatar fetch via its own
+  /// FFI) as a hidden row — never shown in the transfer bar, but wired into
+  /// the ft_done lifecycle so disconnects resolve its waiter. Resolves on
+  /// success; throws like [waitTask] otherwise.
+  Future<void> trackHiddenTask(
+    int taskId,
+    String displayName, {
+    Duration timeout = const Duration(minutes: 60),
+  }) async {
+    _jobs.putIfAbsent(
+      taskId,
+      () => TransferJob(
+        taskId: taskId,
+        kind: TransferKind.download,
+        displayName: displayName,
+        total: 0,
+        visible: false,
+      ),
+    );
+    try {
+      await waitTask(taskId, timeout);
+    } finally {
+      _jobs.remove(taskId);
+      notifyListeners();
+    }
+  }
+
   // ─── Job-row plumbing ─────────────────────────────────────────────
 
   void cancel(int taskId) {

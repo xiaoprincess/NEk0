@@ -45,6 +45,10 @@ class TsClient {
   final double volume;
   final String? uid;
 
+  /// MD5 hash of the client's avatar (server-pushed `client_flag_avatar`).
+  /// Null = no avatar set. Doubles as the avatar-cache key (content-addressed).
+  final String? avatarHash;
+
   /// The client's database id (cldbid) used by group/permission commands.
   /// 0 while the server has not announced it yet.
   final int databaseId;
@@ -78,6 +82,7 @@ class TsClient {
     this.isTalking = false,
     this.volume = 0.0,
     this.uid,
+    this.avatarHash,
     this.databaseId = 0,
     this.clientType = 0,
     this.isChannelCommander = false,
@@ -101,6 +106,7 @@ class TsClient {
     isTalking: json['is_talking'] as bool? ?? false,
     volume: (json['volume'] as num?)?.toDouble() ?? 0.0,
     uid: json['uid'] as String?,
+    avatarHash: json['avatar_hash'] as String?,
     databaseId: (json['database_id'] as num?)?.toInt() ?? 0,
     clientType: json['client_type'] as int? ?? 0,
     isChannelCommander: json['is_channel_commander'] as bool? ?? false,
@@ -125,6 +131,7 @@ class TsClient {
     isTalking: isTalking ?? this.isTalking,
     volume: volume ?? this.volume,
     uid: uid,
+    avatarHash: avatarHash,
     databaseId: databaseId,
     clientType: clientType,
     isChannelCommander: isChannelCommander,
