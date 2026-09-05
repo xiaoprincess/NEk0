@@ -49,14 +49,16 @@ android {
 
     buildTypes {
         release {
-            release {
             // 判断是否有签名参数，决定使用哪种签名
             // 命令行传递 -PuseReleaseSigning=true 时使用release签名
-            val useReleaseSigning = project.hasProperty("useReleaseSigning") 
+            val useReleaseSigning = project.hasProperty("useReleaseSigning")
                     && project.property("useReleaseSigning") == "true"
 
+            // fork 上没有配置签名密钥时回退 debug 签名，保证 tag 构建总能出包
+            val keystoreReady = rootProject.file("app/key.properties").exists()
+
             // 默认使用debug签名，指定参数时使用release签名
-            signingConfig = if (useReleaseSigning) {
+            signingConfig = if (useReleaseSigning && keystoreReady) {
                 signingConfigs.getByName("release")
             } else {
                 signingConfigs.getByName("debug") // 使用默认的debug签名
@@ -66,7 +68,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-        }
         }
     }
 }

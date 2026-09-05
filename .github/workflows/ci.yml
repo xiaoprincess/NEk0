@@ -8,6 +8,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -53,7 +56,13 @@ jobs:
         flutter analyze
     - name: Generate key
       if: startsWith(github.ref, 'refs/tags/')
-      run: echo "${{ secrets.KEY_STORE }}" | base64 --decode > android/app/key.jks  && echo "${{ secrets.KEY_PROPERTIES }}" > android/app/key.properties
+      run: |
+        if [ -n "${{ secrets.KEY_STORE }}" ] && [ -n "${{ secrets.KEY_PROPERTIES }}" ]; then
+          echo "${{ secrets.KEY_STORE }}" | base64 --decode > android/app/key.jks
+          echo "${{ secrets.KEY_PROPERTIES }}" > android/app/key.properties
+        else
+          echo "No release keystore configured — the build falls back to debug signing."
+        fi
     - name: Flutter build
       if: startsWith(github.ref, 'refs/tags/')
       run: |
@@ -70,7 +79,7 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v3.0.2
       with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || secrets.GITHUB_TOKEN }}
           files: |
             build/app/outputs/flutter-apk/Nek0_${{github.ref_name}}_android_armeabi-v7a.apk
             build/app/outputs/flutter-apk/Nek0_${{github.ref_name}}_android_arm64-v8a.apk
@@ -79,6 +88,10 @@ jobs:
     - name: Gitee Release
       if: startsWith(github.ref, 'refs/tags/')
       run: |
+          if [ -z "${{ secrets.GITEE_TOKEN }}" ]; then
+            echo "GITEE_TOKEN not configured — skipping the Gitee mirror release."
+            exit 0
+          fi
           sudo apt install python3-requests
           python3 release_to_gitee.py --token ${{ secrets.GITEE_TOKEN}} --tag ${{github.ref_name}} --server ${{ secrets.PROXY_SERVER }} --psw ${{ secrets.PSW }} --file build/app/outputs/flutter-apk/Nek0_${{github.ref_name}}_android_armeabi-v7a.apk
           python3 release_to_gitee.py --token ${{ secrets.GITEE_TOKEN}} --tag ${{github.ref_name}} --server ${{ secrets.PROXY_SERVER }} --psw ${{ secrets.PSW }} --file build/app/outputs/flutter-apk/Nek0_${{github.ref_name}}_android_arm64-v8a.apk
