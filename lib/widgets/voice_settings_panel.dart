@@ -173,6 +173,7 @@ class _VoiceSettingsPanelState extends State<VoiceSettingsPanel> {
                                   widget.notifier.setVadThreshold(t);
                                 },
                         ),
+                      ),
                     ],
                   ),
                 ),
@@ -193,7 +194,10 @@ class _VoiceSettingsPanelState extends State<VoiceSettingsPanel> {
                       ),
                       Text(
                         _vadThreshold.toStringAsFixed(3),
-                        style: const TextStyle(color: Colors.grey, fontSize: 11),
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 11,
+                        ),
                       ),
                     ],
                   ),
