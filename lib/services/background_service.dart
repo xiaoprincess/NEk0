@@ -38,18 +38,21 @@ class BackgroundService {
     try {
       file = await FilePicker.pickFile(type: FileType.image);
     } catch (_) {
-      return null;
+      return null; // cancelled, or the picker itself failed
     }
     if (file == null) return null;
-    Uint8List? bytes;
+    Uint8List bytes;
     try {
       bytes = await file.readAsBytes();
     } catch (_) {
       return null;
     }
-    if (bytes == null || bytes.isEmpty) return null;
+    if (bytes.isEmpty) return null;
 
-    final rawExt = (file.extension ?? '').toLowerCase();
+    // file_picker v12 has no PlatformFile.extension — take it from the name.
+    final name = file.name;
+    final dot = name.lastIndexOf('.');
+    final rawExt = dot >= 0 ? name.substring(dot + 1).toLowerCase() : '';
     final ext = _allowedExtensions.contains(rawExt) ? rawExt : 'jpg';
     final dir = await _directory();
     // Remove any previous custom image (its extension may differ).
