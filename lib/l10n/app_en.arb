@@ -319,5 +319,10 @@
   "permNotConnected": "Not connected",
   "permQueueFailed": "Failed to queue the request",
   "permTimeout": "The server did not answer in time",
-  "permFailedUnknown": "The server rejected the request"
+  "permFailedUnknown": "The server rejected the request",
+  "backgroundSection": "Background",
+  "bgPickImage": "Pick Image",
+  "bgDim": "Dim",
+  "bgOpacity": "Opacity",
+  "bgReset": "Reset"
 }

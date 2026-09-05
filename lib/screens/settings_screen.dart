@@ -10,6 +10,7 @@ import '../models/app_locale.dart';
 import '../models/app_settings.dart';
 import '../models/ts_state.dart';
 import '../services/audio_service.dart';
+import '../services/background_service.dart';
 import '../services/ota_service.dart';
 import '../services/sfx_service.dart';
 import '../widgets/voice_settings_panel.dart';
@@ -32,6 +33,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _micTest = false;
   double _testRms = 0.0;
   final Map<int, String?> _sfxNames = {};
+  String? _bgName;
 
   @override
   void initState() {
@@ -41,6 +43,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
     _loadLanguage();
     _loadSfxNames();
+    _loadBgName();
   }
 
   Future<void> _loadLanguage() async {
@@ -204,6 +207,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   void _previewSfx(int kind) {
     SfxService.preview(kind);
+  }
+
+  Future<void> _loadBgName() async {
+    final name = await BackgroundService.customName();
+    if (mounted) setState(() => _bgName = name);
+  }
+
+  Future<void> _pickBackground() async {
+    final path = await BackgroundService.pickAndStore();
+    if (!mounted || path == null) return;
+    await ref.read(appSettingsProvider.notifier).setBackground(path);
+    if (mounted) await _loadBgName();
+  }
+
+  Future<void> _resetBackground() async {
+    await BackgroundService.reset();
+    await ref.read(appSettingsProvider.notifier).clearBackground();
+    if (mounted) setState(() => _bgName = null);
   }
 
   String _sfxLabel(AppLocalizations al, int kind) {
@@ -553,10 +574,112 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+  /// User-custom background image: pick / reset + dimming slider. The image
+  /// itself is rendered app-wide by the background layer in main.dart.
+  Widget _buildBackgroundSection(BuildContext context) {
+    final al = AppLocalizations.of(context);
+    final settings = ref.watch(appSettingsProvider);
+    final hasBg = settings.backgroundPath != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(al.backgroundSection),
+        const SizedBox(height: 8),
+        Card(
+          color: const Color(0xFF1A1A2E),
+          margin: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        hasBg ? (_bgName ?? al.sfxDefault) : al.sfxDefault,
+                        style: TextStyle(
+                          color: hasBg ? Colors.blueAccent : Colors.grey,
+                          fontSize: 12,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: hasBg ? _resetBackground : null,
+                      tooltip: al.bgReset,
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.all(6),
+                      icon: const Icon(Icons.restore, size: 20),
+                      color: Colors.blueAccent,
+                    ),
+                    const SizedBox(width: 4),
+                    OutlinedButton(
+                      onPressed: _pickBackground,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.blueAccent,
+                        side: const BorderSide(color: Color(0xFF2A2A4A)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      child: Text(
+                        al.bgPickImage,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Text(
+                      al.bgDim,
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        value: settings.backgroundDim,
+                        min: 0.0,
+                        max: 0.8,
+                        activeColor: Colors.blue,
+                        onChanged: (v) => ref
+                            .read(appSettingsProvider.notifier)
+                            .setBackgroundDim(v),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Text(
+                      al.bgOpacity,
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        value: settings.backgroundOpacity,
+                        min: 0.1,
+                        max: 1.0,
+                        activeColor: Colors.blue,
+                        onChanged: (v) => ref
+                            .read(appSettingsProvider.notifier)
+                            .setBackgroundOpacity(v),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F23),
       appBar: AppBar(
         title: Text(AppLocalizations.of(context).settingsTitle),
         backgroundColor: const Color(0xFF16213E),
@@ -572,6 +695,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             _buildAudioSection(context),
             const SizedBox(height: 24),
             _buildGestureSection(context),
+            const SizedBox(height: 24),
+            _buildBackgroundSection(context),
             const SizedBox(height: 24),
             _SectionHeader(AppLocalizations.of(context).language),
             const SizedBox(height: 8),

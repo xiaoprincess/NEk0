@@ -756,4 +756,19 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get permFailedUnknown => '服务器拒绝了该请求';
+
+  @override
+  String get backgroundSection => '背景';
+
+  @override
+  String get bgPickImage => '选择图片';
+
+  @override
+  String get bgDim => '背景变暗';
+
+  @override
+  String get bgOpacity => '背景不透明度';
+
+  @override
+  String get bgReset => '恢复默认';
 }

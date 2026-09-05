@@ -299,5 +299,10 @@
   "permNotConnected": "未连接",
   "permQueueFailed": "请求入队失败",
   "permTimeout": "服务器未在规定时间内应答",
-  "permFailedUnknown": "服务器拒绝了该请求"
+  "permFailedUnknown": "服务器拒绝了该请求",
+  "backgroundSection": "背景",
+  "bgPickImage": "选择图片",
+  "bgDim": "背景变暗",
+  "bgOpacity": "背景不透明度",
+  "bgReset": "恢复默认"
 }
