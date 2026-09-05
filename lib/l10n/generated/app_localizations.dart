@@ -1231,6 +1231,306 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Operation failed: {reason}'**
   String fmReasonPrefix(String reason);
+
+  /// No description provided for @channelsNoJoinPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'You do not have permission to join this channel'**
+  String get channelsNoJoinPermission;
+
+  /// No description provided for @channelTalkPowerNeeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Talk power required: {power}'**
+  String channelTalkPowerNeeded(int power);
+
+  /// No description provided for @serverQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'Server query client'**
+  String get serverQuery;
+
+  /// No description provided for @serverQueryAdmin.
+  ///
+  /// In en, this message translates to:
+  /// **'Server query with admin rights'**
+  String get serverQueryAdmin;
+
+  /// No description provided for @channelCommander.
+  ///
+  /// In en, this message translates to:
+  /// **'Channel commander'**
+  String get channelCommander;
+
+  /// No description provided for @prioritySpeaker.
+  ///
+  /// In en, this message translates to:
+  /// **'Priority speaker'**
+  String get prioritySpeaker;
+
+  /// No description provided for @recording.
+  ///
+  /// In en, this message translates to:
+  /// **'Recording'**
+  String get recording;
+
+  /// No description provided for @talkPowerDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'No talk power in this channel'**
+  String get talkPowerDenied;
+
+  /// No description provided for @serverGroups.
+  ///
+  /// In en, this message translates to:
+  /// **'Groups: {groups}'**
+  String serverGroups(String groups);
+
+  /// No description provided for @menuMoveToChannel.
+  ///
+  /// In en, this message translates to:
+  /// **'Move to channel'**
+  String get menuMoveToChannel;
+
+  /// No description provided for @menuKickFromChannel.
+  ///
+  /// In en, this message translates to:
+  /// **'Kick from channel'**
+  String get menuKickFromChannel;
+
+  /// No description provided for @menuKickFromServer.
+  ///
+  /// In en, this message translates to:
+  /// **'Kick from server'**
+  String get menuKickFromServer;
+
+  /// No description provided for @menuBan.
+  ///
+  /// In en, this message translates to:
+  /// **'Ban'**
+  String get menuBan;
+
+  /// No description provided for @kickReasonHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Reason (optional)'**
+  String get kickReasonHint;
+
+  /// No description provided for @banReasonHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Reason (optional — empty cancels)'**
+  String get banReasonHint;
+
+  /// No description provided for @banDurationLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Ban duration'**
+  String get banDurationLabel;
+
+  /// No description provided for @banDurationPermanent.
+  ///
+  /// In en, this message translates to:
+  /// **'Permanent'**
+  String get banDurationPermanent;
+
+  /// No description provided for @banDuration1h.
+  ///
+  /// In en, this message translates to:
+  /// **'1 hour'**
+  String get banDuration1h;
+
+  /// No description provided for @banDuration1d.
+  ///
+  /// In en, this message translates to:
+  /// **'1 day'**
+  String get banDuration1d;
+
+  /// No description provided for @banDuration1w.
+  ///
+  /// In en, this message translates to:
+  /// **'1 week'**
+  String get banDuration1w;
+
+  /// No description provided for @startKick.
+  ///
+  /// In en, this message translates to:
+  /// **'Kick'**
+  String get startKick;
+
+  /// No description provided for @startBan.
+  ///
+  /// In en, this message translates to:
+  /// **'Ban'**
+  String get startBan;
+
+  /// No description provided for @banCanceled.
+  ///
+  /// In en, this message translates to:
+  /// **'Ban canceled — no reason given'**
+  String get banCanceled;
+
+  /// No description provided for @moveSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Move sent'**
+  String get moveSucceeded;
+
+  /// No description provided for @kickSent.
+  ///
+  /// In en, this message translates to:
+  /// **'Kick sent'**
+  String get kickSent;
+
+  /// No description provided for @banSent.
+  ///
+  /// In en, this message translates to:
+  /// **'Ban sent'**
+  String get banSent;
+
+  /// No description provided for @menuServerGroups.
+  ///
+  /// In en, this message translates to:
+  /// **'Grant permissions (server groups)'**
+  String get menuServerGroups;
+
+  /// No description provided for @menuChannelGroups.
+  ///
+  /// In en, this message translates to:
+  /// **'Channel group'**
+  String get menuChannelGroups;
+
+  /// No description provided for @menuGrantRevokePerms.
+  ///
+  /// In en, this message translates to:
+  /// **'Grant / revoke permissions'**
+  String get menuGrantRevokePerms;
+
+  /// No description provided for @grantPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Grant permission'**
+  String get grantPermission;
+
+  /// No description provided for @revokePermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Revoke permission'**
+  String get revokePermission;
+
+  /// No description provided for @permCurrent.
+  ///
+  /// In en, this message translates to:
+  /// **'Current: {current}'**
+  String permCurrent(String current);
+
+  /// No description provided for @permPresetTalkPower.
+  ///
+  /// In en, this message translates to:
+  /// **'Talk power'**
+  String get permPresetTalkPower;
+
+  /// No description provided for @permPresetPrioritySpeaker.
+  ///
+  /// In en, this message translates to:
+  /// **'Priority speaker'**
+  String get permPresetPrioritySpeaker;
+
+  /// No description provided for @permPresetChannelCommander.
+  ///
+  /// In en, this message translates to:
+  /// **'Channel commander'**
+  String get permPresetChannelCommander;
+
+  /// No description provided for @permChannelSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Channel permissions'**
+  String get permChannelSection;
+
+  /// No description provided for @permServerSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Server-wide permissions'**
+  String get permServerSection;
+
+  /// No description provided for @permCustomSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom permission'**
+  String get permCustomSection;
+
+  /// No description provided for @permCustomPermsid.
+  ///
+  /// In en, this message translates to:
+  /// **'perm id (e.g. i_client_whisper_power)'**
+  String get permCustomPermsid;
+
+  /// No description provided for @permCustomValue.
+  ///
+  /// In en, this message translates to:
+  /// **'value'**
+  String get permCustomValue;
+
+  /// No description provided for @channelGroupNone.
+  ///
+  /// In en, this message translates to:
+  /// **'No channel group'**
+  String get channelGroupNone;
+
+  /// No description provided for @groupsNotLoaded.
+  ///
+  /// In en, this message translates to:
+  /// **'Group list not loaded yet'**
+  String get groupsNotLoaded;
+
+  /// No description provided for @retry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get retry;
+
+  /// No description provided for @dbIdUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Cannot get this user\'s database ID yet'**
+  String get dbIdUnavailable;
+
+  /// No description provided for @permOpSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Permission change sent'**
+  String get permOpSucceeded;
+
+  /// No description provided for @permOpFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Permission change failed: {error}'**
+  String permOpFailed(String error);
+
+  /// No description provided for @permNotConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Not connected'**
+  String get permNotConnected;
+
+  /// No description provided for @permQueueFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to queue the request'**
+  String get permQueueFailed;
+
+  /// No description provided for @permTimeout.
+  ///
+  /// In en, this message translates to:
+  /// **'The server did not answer in time'**
+  String get permTimeout;
+
+  /// No description provided for @permFailedUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'The server rejected the request'**
+  String get permFailedUnknown;
 }
 
 class _AppLocalizationsDelegate

@@ -224,5 +224,78 @@
     "placeholders": {
       "reason": { "type": "String" }
     }
-  }
+  },
+
+  "channelsNoJoinPermission": "你没有权限加入此频道",
+  "channelTalkPowerNeeded": "需要发言权限：{power}",
+  "@channelTalkPowerNeeded": {
+    "placeholders": {
+      "power": { "type": "int" }
+    }
+  },
+  "serverQuery": "服务器查询客户端",
+  "serverQueryAdmin": "拥有管理员权限的服务器查询端",
+  "channelCommander": "频道指挥官",
+  "prioritySpeaker": "优先发言者",
+  "recording": "正在录音",
+  "talkPowerDenied": "在此频道没有发言权限",
+  "serverGroups": "组：{groups}",
+  "@serverGroups": {
+    "placeholders": {
+      "groups": { "type": "String" }
+    }
+  },
+
+  "menuMoveToChannel": "移动到频道",
+  "menuKickFromChannel": "移出频道",
+  "menuKickFromServer": "移出服务器",
+  "menuBan": "封禁",
+  "kickReasonHint": "原因（可选）",
+  "banReasonHint": "原因（可选，留空将取消）",
+  "banDurationLabel": "封禁时长",
+  "banDurationPermanent": "永久",
+  "banDuration1h": "1 小时",
+  "banDuration1d": "1 天",
+  "banDuration1w": "1 周",
+  "startKick": "踢出",
+  "startBan": "封禁",
+  "banCanceled": "已取消封禁——未填写原因",
+  "moveSucceeded": "移动请求已发送",
+  "kickSent": "踢出请求已发送",
+  "banSent": "封禁请求已发送",
+
+  "menuServerGroups": "给予权限（服务器组）",
+  "menuChannelGroups": "频道组",
+  "menuGrantRevokePerms": "给予 / 移除权限",
+  "grantPermission": "给予权限",
+  "revokePermission": "移除权限",
+  "permCurrent": "当前：{current}",
+  "@permCurrent": {
+    "placeholders": {
+      "current": { "type": "String" }
+    }
+  },
+  "permPresetTalkPower": "发言权限",
+  "permPresetPrioritySpeaker": "优先发言",
+  "permPresetChannelCommander": "频道指挥官",
+  "permChannelSection": "频道权限",
+  "permServerSection": "服务器级权限",
+  "permCustomSection": "自定义权限",
+  "permCustomPermsid": "权限 ID（如 i_client_whisper_power）",
+  "permCustomValue": "值",
+  "channelGroupNone": "无频道组",
+  "groupsNotLoaded": "组列表尚未加载",
+  "retry": "重试",
+  "dbIdUnavailable": "暂无法获取该用户的数据库 ID",
+  "permOpSucceeded": "权限变更已发送",
+  "permOpFailed": "权限变更失败：{error}",
+  "@permOpFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "permNotConnected": "未连接",
+  "permQueueFailed": "请求入队失败",
+  "permTimeout": "服务器未在规定时间内应答",
+  "permFailedUnknown": "服务器拒绝了该请求"
 }

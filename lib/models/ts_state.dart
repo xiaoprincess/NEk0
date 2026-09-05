@@ -8,7 +8,9 @@ import '../models/app_locale.dart';
 import '../models/channel.dart';
 import '../models/client.dart';
 import '../models/chat_message.dart';
+import '../models/perm.dart';
 import '../models/server.dart';
+import '../l10n/generated/app_localizations.dart';
 import '../services/ts_ffi.dart';
 import '../services/audio_service.dart';
 import '../services/foreground_service.dart';
@@ -152,6 +154,34 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
   // channel id. Cleared on disconnect; deliberately never persisted to disk.
   final Map<int, String> _channelPasswords = {};
 
+  /// Pending permission-management operations: token → completer. Resolved by
+  /// the `perm_op` event handler; timed out after 8s by the caller.
+  final Map<String, Completer<String?>> _permCompleters = {};
+  int _permSeq = 0;
+
+  /// OUR OWN directly-assigned permissions (from Rust `ts_get_own_perms`),
+  /// refreshed after connect. Low-threshold hint for UI affordances only.
+  List<TsPerm> _ownPerms = const [];
+
+  /// True when our own directly-assigned permissions include any of the
+  /// management powers (client perm modify / group member add / channel perm
+  /// modify with a positive value). Used to show the permission-management
+  /// entry even when the server pushes no permission hints. Note:
+  /// `clientpermlist` only lists DIRECTLY-assigned perms, so a server admin
+  /// whose powers come from groups will not be detected here — that is the
+  /// known low-threshold limitation (their hints usually arrive anyway).
+  bool get canManagePermissions => _ownPerms.any((p) {
+    if (!p.effectivePositive) return false;
+    return p.name == PermNames.clientPermissionModify ||
+        p.name == PermNames.groupMemberAdd ||
+        p.name == PermNames.channelPermissionModify;
+  });
+
+  /// Localized strings without a BuildContext (same pattern as the
+  /// notification labels).
+  AppLocalizations? get _l10n =>
+      ref.read(localeProvider.notifier).localizations;
+
   @override
   TsConnectionState build() {
     ForegroundService.init();
@@ -245,7 +275,14 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
 
       for (final raw in events) {
         final event = raw as Map<String, dynamic>;
-        _handleEvent(event);
+        // Catch per event: the batch is already drained from Rust, so a
+        // batch-level failure would silently drop every later event — e.g.
+        // the perm_op receipt a dialog is awaiting.
+        try {
+          _handleEvent(event);
+        } catch (e) {
+          debugPrint('TS: event ${event['type']} handler error: $e');
+        }
       }
       // Poll voice activity for UI indicator
       final va = TsNative.isVoiceActive();
@@ -327,6 +364,9 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         // OEM guide dialog (server_screen._maybeShowOemGuide), so the user
         // knows why the system settings page opens.
         _saveIdentity();
+        // Pull our own directly-assigned permissions (clientpermlist answer
+        // is requested by the Rust side on connect; read it back now).
+        refreshOwnPerms();
         break;
 
       case 'disconnected':
@@ -337,6 +377,11 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
         _audioService = null;
         ForegroundService.stop();
         _channelPasswords.clear();
+        for (final c in _permCompleters.values) {
+          c.complete(_l10n?.permNotConnected ?? 'Not connected');
+        }
+        _permCompleters.clear();
+        _ownPerms = const [];
         state = const TsConnectionState();
         break;
 
@@ -433,6 +478,28 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
       case 'ft_done':
       case 'ft_op':
         FtTransferService.instance.handleEvent(event);
+        break;
+
+      case 'perm_op':
+        // Result of a permission-management command (group add/remove,
+        // channel group set/clear, channel perm grant/revoke). Resolves the
+        // awaiting completer: null = success, otherwise the server error.
+        final token = event['token'] as String;
+        final ok = event['ok'] as bool? ?? false;
+        final error = event['error'] as String?;
+        final completer = _permCompleters.remove(token);
+        if (completer != null) {
+          if (ok) {
+            completer.complete(null);
+          } else {
+            completer.complete(
+              error?.isNotEmpty == true
+                  ? error
+                  : (_l10n?.permFailedUnknown ??
+                        'The server rejected the request'),
+            );
+          }
+        }
         break;
     }
   }
@@ -646,6 +713,142 @@ class TsConnectionNotifier extends Notifier<TsConnectionState> {
     if (!state.connected) return;
     TsNative.sendPoke(clientId, message);
   }
+
+  /// Kick a client from the current channel ([fromServer] == false) or the
+  /// whole server ([fromServer] == true). Only call when the client's
+  /// permission hints allow it; an empty [reason] kicks without a reason
+  /// message (only the dialog's dismissal cancels, before reaching us).
+  /// Returns null on success or a human-readable error description (server
+  /// rejection, timeout, ...) — the server's real answer arrives through
+  /// `perm_op`.
+  Future<String?> kickClient(
+    int clientId, {
+    required bool fromServer,
+    String reason = '',
+  }) {
+    return _permOp(
+      (t) => TsNative.kickClient(
+        clientId,
+        fromServer: fromServer,
+        reason: reason,
+        token: t,
+      ),
+    );
+  }
+
+  /// Ban a client; [timeSeconds] == 0 is a permanent ban. Returns null on
+  /// success or a human-readable error description.
+  Future<String?> banClient(
+    int clientId, {
+    required int timeSeconds,
+    String reason = '',
+  }) {
+    if (reason.isEmpty && timeSeconds == 0) {
+      return Future.value(_l10n?.banCanceled ?? 'Ban canceled');
+    }
+    return _permOp(
+      (t) => TsNative.banClient(
+        clientId,
+        timeSeconds: timeSeconds,
+        reason: reason,
+        token: t,
+      ),
+    );
+  }
+
+  /// Move a client (or ourselves) to another channel. Returns null on
+  /// success or a human-readable error description.
+  Future<String?> moveClient(int clientId, int channelId, {String? password}) =>
+      _permOp(
+        (t) => TsNative.moveClient(
+          clientId,
+          channelId,
+          password: password,
+          token: t,
+        ),
+      );
+
+  // ─── Permission management ─────────────────────────────────────────
+
+  /// Re-reads our own directly-assigned permissions from the Rust cache
+  /// (filled by the `clientpermlist` answer requested on connect).
+  void refreshOwnPerms() {
+    try {
+      _ownPerms = TsNative.getOwnPerms().map(TsPerm.fromJson).toList();
+    } catch (_) {
+      _ownPerms = const [];
+    }
+  }
+
+  /// Runs a permission-management command and awaits the server's answer.
+  /// Returns null on success, or a human-readable error description.
+  Future<String?> _permOp(bool Function(String token) send) async {
+    if (!state.connected) {
+      debugPrint('TS: perm op rejected: not connected');
+      return _l10n?.permNotConnected ?? 'Not connected';
+    }
+    final token = 'perm_${_permSeq++}';
+    final completer = Completer<String?>();
+    _permCompleters[token] = completer;
+    // The FFI call itself can throw (e.g. a stale native library that lacks
+    // the symbol — hot reload does not refresh the .so). Catch it so the tap
+    // surfaces an error instead of dying as an uncaught exception with no
+    // reaction at all.
+    bool queued;
+    try {
+      queued = send(token);
+    } catch (e) {
+      _permCompleters.remove(token);
+      debugPrint('TS: perm op $token send threw: $e');
+      return _l10n?.permQueueFailed ?? 'Failed to queue the request';
+    }
+    if (!queued) {
+      _permCompleters.remove(token);
+      return _l10n?.permQueueFailed ?? 'Failed to queue the request';
+    }
+    try {
+      return await completer.future.timeout(const Duration(seconds: 8));
+    } on TimeoutException {
+      _permCompleters.remove(token);
+      return _l10n?.permTimeout ?? 'The server did not answer in time';
+    }
+  }
+
+  /// Add a client (database id) to a server group. null = success.
+  Future<String?> addToServerGroup(int dbid, int sgid) =>
+      _permOp((t) => TsNative.serverGroupAddClient(dbid, sgid, t));
+
+  /// Remove a client from a server group. null = success.
+  Future<String?> removeFromServerGroup(int dbid, int sgid) =>
+      _permOp((t) => TsNative.serverGroupDelClient(dbid, sgid, t));
+
+  /// Set a client's channel group in a channel. null = success.
+  Future<String?> setChannelGroup(int dbid, int cgid, int channelId) =>
+      _permOp((t) => TsNative.channelGroupSet(dbid, channelId, cgid, t));
+
+  /// Clear a client's channel group in a channel. null = success.
+  Future<String?> clearChannelGroup(int dbid, int channelId) =>
+      _permOp((t) => TsNative.channelGroupClear(dbid, channelId, t));
+
+  /// Grant a channel-scoped permission to a client. null = success.
+  Future<String?> grantChannelPerm(
+    int dbid,
+    int cid,
+    String permsid,
+    int value,
+  ) => _permOp((t) => TsNative.channelPermGrant(dbid, cid, permsid, value, t));
+
+  /// Revoke a channel-scoped permission from a client. null = success.
+  Future<String?> revokeChannelPerm(int dbid, int cid, String permsid) =>
+      _permOp((t) => TsNative.channelPermRevoke(dbid, cid, permsid, t));
+
+  /// Grant a server-wide permission to a client. null = success.
+  Future<String?> grantServerPerm(int dbid, String permsid, int value) =>
+      _permOp((t) => TsNative.serverPermGrant(dbid, permsid, value, t));
+
+  /// Revoke a server-wide permission from a client. null = success.
+  Future<String?> revokeServerPerm(int dbid, String permsid) =>
+      _permOp((t) => TsNative.serverPermRevoke(dbid, permsid, t));
 
   void setVadThreshold(double threshold) {
     state = state.copyWith(vadThreshold: threshold);

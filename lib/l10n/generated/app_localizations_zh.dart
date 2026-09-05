@@ -592,4 +592,162 @@ class AppLocalizationsZh extends AppLocalizations {
   String fmReasonPrefix(String reason) {
     return '操作失败：$reason';
   }
+
+  @override
+  String get channelsNoJoinPermission => '你没有权限加入此频道';
+
+  @override
+  String channelTalkPowerNeeded(int power) {
+    return '需要发言权限：$power';
+  }
+
+  @override
+  String get serverQuery => '服务器查询客户端';
+
+  @override
+  String get serverQueryAdmin => '拥有管理员权限的服务器查询端';
+
+  @override
+  String get channelCommander => '频道指挥官';
+
+  @override
+  String get prioritySpeaker => '优先发言者';
+
+  @override
+  String get recording => '正在录音';
+
+  @override
+  String get talkPowerDenied => '在此频道没有发言权限';
+
+  @override
+  String serverGroups(String groups) {
+    return '组：$groups';
+  }
+
+  @override
+  String get menuMoveToChannel => '移动到频道';
+
+  @override
+  String get menuKickFromChannel => '移出频道';
+
+  @override
+  String get menuKickFromServer => '移出服务器';
+
+  @override
+  String get menuBan => '封禁';
+
+  @override
+  String get kickReasonHint => '原因（可选）';
+
+  @override
+  String get banReasonHint => '原因（可选，留空将取消）';
+
+  @override
+  String get banDurationLabel => '封禁时长';
+
+  @override
+  String get banDurationPermanent => '永久';
+
+  @override
+  String get banDuration1h => '1 小时';
+
+  @override
+  String get banDuration1d => '1 天';
+
+  @override
+  String get banDuration1w => '1 周';
+
+  @override
+  String get startKick => '踢出';
+
+  @override
+  String get startBan => '封禁';
+
+  @override
+  String get banCanceled => '已取消封禁——未填写原因';
+
+  @override
+  String get moveSucceeded => '移动请求已发送';
+
+  @override
+  String get kickSent => '踢出请求已发送';
+
+  @override
+  String get banSent => '封禁请求已发送';
+
+  @override
+  String get menuServerGroups => '给予权限（服务器组）';
+
+  @override
+  String get menuChannelGroups => '频道组';
+
+  @override
+  String get menuGrantRevokePerms => '给予 / 移除权限';
+
+  @override
+  String get grantPermission => '给予权限';
+
+  @override
+  String get revokePermission => '移除权限';
+
+  @override
+  String permCurrent(String current) {
+    return '当前：$current';
+  }
+
+  @override
+  String get permPresetTalkPower => '发言权限';
+
+  @override
+  String get permPresetPrioritySpeaker => '优先发言';
+
+  @override
+  String get permPresetChannelCommander => '频道指挥官';
+
+  @override
+  String get permChannelSection => '频道权限';
+
+  @override
+  String get permServerSection => '服务器级权限';
+
+  @override
+  String get permCustomSection => '自定义权限';
+
+  @override
+  String get permCustomPermsid => '权限 ID（如 i_client_whisper_power）';
+
+  @override
+  String get permCustomValue => '值';
+
+  @override
+  String get channelGroupNone => '无频道组';
+
+  @override
+  String get groupsNotLoaded => '组列表尚未加载';
+
+  @override
+  String get retry => '重试';
+
+  @override
+  String get dbIdUnavailable => '暂无法获取该用户的数据库 ID';
+
+  @override
+  String get permOpSucceeded => '权限变更已发送';
+
+  @override
+  String permOpFailed(String error) {
+    return '权限变更失败：$error';
+  }
+
+  @override
+  String get permNotConnected => '未连接';
+
+  @override
+  String get permQueueFailed => '请求入队失败';
+
+  @override
+  String get permTimeout => '服务器未在规定时间内应答';
+
+  @override
+  String get permFailedUnknown => '服务器拒绝了该请求';
 }

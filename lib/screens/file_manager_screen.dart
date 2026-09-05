@@ -175,40 +175,10 @@ class _FileManagerScreenState extends State<FileManagerScreen> {
 
   Future<void> _createFolder() async {
     final al = AppLocalizations.of(context);
-    final controller = TextEditingController();
     final name = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A2E),
-        title: Text(
-          al.fmNewFolder,
-          style: const TextStyle(color: Colors.white, fontSize: 18),
-        ),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: al.fmNewFolderName,
-            hintStyle: const TextStyle(color: Colors.grey),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(al.cancel, style: const TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-            child: Text(
-              al.send,
-              style: const TextStyle(color: Colors.blueAccent),
-            ),
-          ),
-        ],
-      ),
+      builder: (ctx) => const _NewFolderDialog(),
     );
-    controller.dispose();
     if (!mounted || name == null || name.isEmpty) return;
     if (name.contains('/') ||
         name.contains('\\') ||
@@ -965,4 +935,66 @@ class _SearchHit {
   final FtEntry entry;
   final String relativePath;
   const _SearchHit({required this.entry, required this.relativePath});
+}
+
+/// New-folder name prompt. Owns its [TextEditingController] so it outlives the
+/// dialog's exit transition ([State.dispose] runs only after the route's widget
+/// tree has stopped rebuilding), preventing "used after being disposed"
+/// crashes during the animated close frames. Pops the trimmed folder name, or
+/// null when dismissed.
+class _NewFolderDialog extends StatefulWidget {
+  const _NewFolderDialog();
+
+  @override
+  State<_NewFolderDialog> createState() => _NewFolderDialogState();
+}
+
+class _NewFolderDialogState extends State<_NewFolderDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final al = AppLocalizations.of(context);
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1A1A2E),
+      title: Text(
+        al.fmNewFolder,
+        style: const TextStyle(color: Colors.white, fontSize: 18),
+      ),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          hintText: al.fmNewFolderName,
+          hintStyle: const TextStyle(color: Colors.grey),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(al.cancel, style: const TextStyle(color: Colors.grey)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: Text(
+            al.send,
+            style: const TextStyle(color: Colors.blueAccent),
+          ),
+        ),
+      ],
+    );
+  }
 }

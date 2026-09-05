@@ -68,19 +68,26 @@ Future<String?> showChannelMenu(BuildContext context, TsChannel channel) async {
               ),
               onTap: () => Navigator.of(ctx).pop(channelMenuJoin),
             ),
-            // File management.
-            ListTile(
-              leading: const Icon(
-                Icons.folder_open,
-                size: 22,
-                color: Colors.blueAccent,
+            // File management — only when we may browse (or upload to) this
+            // channel's file area. The hints arrive from the server shortly
+            // after connect; `permissionHints == 0` means "not known yet"
+            // and the entry stays visible (a denied request surfaces a
+            // server error in the file manager anyway).
+            if (channel.permissionHints == 0 ||
+                channel.canFileBrowse ||
+                channel.canFileUpload)
+              ListTile(
+                leading: const Icon(
+                  Icons.folder_open,
+                  size: 22,
+                  color: Colors.blueAccent,
+                ),
+                title: Text(
+                  al.menuFileManager,
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                ),
+                onTap: () => Navigator.of(ctx).pop(channelMenuFileManager),
               ),
-              title: Text(
-                al.menuFileManager,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-              ),
-              onTap: () => Navigator.of(ctx).pop(channelMenuFileManager),
-            ),
             const SizedBox(height: 8),
           ],
         ),

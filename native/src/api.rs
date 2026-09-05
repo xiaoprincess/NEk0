@@ -1,10 +1,10 @@
 use crate::{
-    Command, TsChannel, TsClient, TsEvent, TsFtEntry,
+    Command, TsChannel, TsClient, TsEvent, TsFtEntry, TsServerGroup, TsChannelGroup, TsPerm,
     AUDIO_DECODERS, AUDIO_DECODERS_STEREO, AUDIO_STREAM, CB_STATS, CLIENT_BUFFERS,
     COMMAND_TX, FRAME_SIZE, FT_CLIENT_FT, FT_KIND_DOWNLOAD, FT_KIND_UPLOAD, FT_LISTS, FT_OPS,
-    FT_TASK_BY_RC, FT_TASKS, FT_TASK_SEQ, IDENTITY_STASH, PLAYED_SAMPLES, ACTIVE_CLIENT_IDS,
-    RUNTIME, SFX_ARMED, SFX_DEFERRED_TEARDOWN, SFX_QUEUE, SFX_SUPPRESS_DISCONNECT,
-    STATE, SWIPE_DISCONNECT, OUTPUT_RESTART_REQUESTED, PendingFtList,
+    FT_TASK_BY_RC, FT_TASKS, FT_TASK_SEQ, IDENTITY_STASH, PERM_OPS, PLAYED_SAMPLES,
+    ACTIVE_CLIENT_IDS, RUNTIME, SFX_ARMED, SFX_DEFERRED_TEARDOWN, SFX_QUEUE,
+    SFX_SUPPRESS_DISCONNECT, STATE, SWIPE_DISCONNECT, OUTPUT_RESTART_REQUESTED, PendingFtList,
 };
 
 use futures::prelude::*;
@@ -228,6 +228,35 @@ fn refresh_from_book(book: &tsclientlib::data::Connection) -> (Vec<TsChannel>, V
     for c in book.clients.values() {
         *count.entry(c.channel.0).or_insert(0) += 1;
     }
+    // Refresh the group caches from the book (populated by the
+    // servergrouplist/channelgrouplist requests we send on connect).
+    {
+        let mut state = STATE.lock();
+        state.server_groups = book
+            .server_groups
+            .values()
+            .map(|g| TsServerGroup {
+                id: g.id.0,
+                name: g.name.clone(),
+                is_permanent: g.is_permanent,
+                needed_member_add_power: g.needed_member_add_power,
+                needed_member_remove_power: g.needed_member_remove_power,
+                sort_id: g.sort_id,
+            })
+            .collect();
+        state.channel_groups = book
+            .channel_groups
+            .values()
+            .map(|g| TsChannelGroup {
+                id: g.id.0,
+                name: g.name.clone(),
+                is_permanent: g.is_permanent,
+                needed_member_add_power: g.needed_member_add_power,
+                needed_member_remove_power: g.needed_member_remove_power,
+                sort_id: g.sort_id,
+            })
+            .collect();
+    }
     let channels = book
         .channels
         .values()
@@ -243,6 +272,9 @@ fn refresh_from_book(book: &tsclientlib::data::Connection) -> (Vec<TsChannel>, V
             has_password: c.has_password.unwrap_or(false),
             client_count: *count.get(&c.id.0).unwrap_or(&0),
             order: c.order.0 as u32,
+            is_default: c.is_default.unwrap_or(false),
+            permission_hints: c.permission_hints.map(|p| p.bits()).unwrap_or(0),
+            needed_talk_power: c.needed_talk_power.unwrap_or(0),
         })
         .collect();
     let clients: Vec<_> = book
@@ -250,14 +282,39 @@ fn refresh_from_book(book: &tsclientlib::data::Connection) -> (Vec<TsChannel>, V
         .values()
         .map(|c| {
             let uid = c.uid.as_ref().map(|u| u.to_string());
+            // What WE may do to this client (raw client-permission-hint bits).
+            let database_id = c.database_id.0;
+            let permission_hints = c.permission_hints.map(|p| p.bits()).unwrap_or(0);
+            let server_groups: Vec<u64> = c.server_groups.iter().map(|g| g.0).collect();
+            let server_group_names: Vec<String> = c
+                .server_groups
+                .iter()
+                .filter_map(|g| book.server_groups.get(g).map(|sg| sg.name.clone()))
+                .collect();
+            let client_type = match c.client_type {
+                tsclientlib::ClientType::Normal => 0u8,
+                tsclientlib::ClientType::Query { admin: false } => 1u8,
+                tsclientlib::ClientType::Query { admin: true } => 2u8,
+            };
             TsClient {
                 id: c.id.0 as u32,
                 nickname: c.name.clone(),
                 channel_id: c.channel.0 as u32,
                 uid,
+                database_id,
                 away: c.away_message.is_some(),
                 input_muted: c.input_muted,
                 output_muted: c.output_muted,
+                client_type,
+                is_channel_commander: c.is_channel_commander,
+                is_recording: c.is_recording,
+                is_priority_speaker: c.is_priority_speaker,
+                talk_power_granted: c.talk_power_granted,
+                talk_power: c.talk_power,
+                permission_hints,
+                server_groups,
+                server_group_names,
+                channel_group: c.channel_group.0 as u32,
                 is_talking: {
                     let state = STATE.lock();
                     state.talking_clients.get(&(c.id.0 as u16))
@@ -436,11 +493,45 @@ async fn do_connect(
         let sub = OutChannelSubscribeAllMessage::new();
         let _ = sub.send(&mut con);
     }
+    // Ask for the group lists so the book's `server_groups`/`channel_groups`
+    // maps (used by the permission-management UI) are populated. The book
+    // handles these messages itself and fills the maps, so this is
+    // fire-and-forget; the first BookEvents batch after the answer refreshes
+    // the STATE caches via refresh_from_book.
+    {
+        let _ =
+            tsclientlib::messages::c2s::OutServerGroupListRequestMessage::new().send(&mut con);
+        let _ =
+            tsclientlib::messages::c2s::OutChannelGroupListRequestMessage::new().send(&mut con);
+    }
+
+    // Own the data we need before sending more commands: `get_state()` borrows
+    // `con` immutably, and the permission-list request needs `&mut con`.
+    let (own_dbid, sname, oid) = {
+        let book = con.get_state().map_err(|e| format!("{}", e))?;
+        let own_dbid = book
+            .clients
+            .get(&book.own_client)
+            .map(|c| c.database_id.0)
+            .unwrap_or(0);
+        (own_dbid, book.server.name.clone(), book.own_client.0 as u32)
+    };
+    // Ask for our own directly-assigned permission list — a low-threshold
+    // hint used by the UI to decide whether to offer the permission-
+    // management entry (independent of the pushed hints). The answer arrives
+    // as a MessageEvent handled below (fills STATE.own_perms).
+    if own_dbid != 0 {
+        let part = tsclientlib::messages::c2s::OutClientPermListRequestPart {
+            client_db_id: tsclientlib::ClientDbId(own_dbid),
+        };
+        let _ = tsclientlib::messages::c2s::OutClientPermListRequestMessage::new(
+            &mut std::iter::once(part),
+        )
+        .send(&mut con);
+    }
 
     let book = con.get_state().map_err(|e| format!("{}", e))?;
     let (channels, clients) = refresh_from_book(&book);
-    let sname = book.server.name.clone();
-    let oid = book.own_client.0 as u32;
 
     eprintln!(
         "do_connect: OK, {} channels, {} clients, own_id={}",
@@ -1475,6 +1566,47 @@ impl OutMessageTrait for RawCmd {
     }
 }
 
+/// Registers a permission-management command's return_code so the
+/// `MessageResult` handler can resolve it into a `PermOp` event; on a send
+/// failure, pushes the failing event immediately.
+fn perm_op_send(
+    result: std::result::Result<tsclientlib::MessageHandle, tsclientlib::Error>,
+    token: &str,
+) {
+    match result {
+        Ok(handle) => {
+            crate::PERM_OPS.lock().insert(handle.0, token.to_string());
+            push_diag(&format!("perm op {}: sent (rc={})", token, handle.0));
+        }
+        Err(e) => {
+            push_diag(&format!("perm op {}: send failed: {}", token, e));
+            STATE.lock().pending_events.push_back(TsEvent::PermOp {
+                token: token.to_string(),
+                ok: false,
+                error: Some(format!("{}", e)),
+            });
+        }
+    }
+}
+
+/// The own client id for self-protection guards. Prefers the live book value:
+/// the cached `STATE.own_client_id` is only written at connect and goes stale
+/// after a temporary-disconnect reconnect (the server may reassign our clid).
+/// Refreshes the cache when the live value differs.
+fn own_client_id_or_cache(con: &tsclientlib::Connection) -> u32 {
+    if let Ok(book) = con.get_state() {
+        let own = book.own_client.0 as u32;
+        if own != 0 {
+            let mut state = STATE.lock();
+            if state.own_client_id != own {
+                state.own_client_id = own;
+            }
+        }
+        return own;
+    }
+    STATE.lock().own_client_id
+}
+
 /// The ft commands REQUIRE the `cpw` argument to be present even for
 /// unlocked channels (omitting it fails with 0x0603 "parameter not found").
 /// Empty is encoded as the bare key (write_arg drops a valueless `=`),
@@ -1768,6 +1900,25 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                             message: p.message.clone(),
                         });
                     }
+                } else if let InMessage::ClientPermList(pl) = msg {
+                    // OUR OWN directly-assigned permission list, requested on
+                    // connect. Store it for the UI (permission-management
+                    // entry visibility). Only directly-assigned perms are
+                    // listed, so treat it as a hint, not authorization.
+                    let list: Vec<TsPerm> = pl
+                        .iter()
+                        .map(|p| TsPerm {
+                            name: p.permission_name_id.clone().unwrap_or_default(),
+                            value: p.permission_value,
+                            negated: p.permission_negated,
+                            skip: p.permission_skip,
+                        })
+                        .collect();
+                    STATE.lock().own_perms = list;
+                    push_diag(&format!(
+                        "own clientpermlist: {} entries",
+                        STATE.lock().own_perms.len()
+                    ));
                 } else if let InMessage::CommandError(err) = msg {
                     // Our commands carry no return_code, so server rejections
                     // arrive here as bare error messages instead of results.
@@ -1813,6 +1964,21 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                     .as_ref()
                     .err()
                     .map(|e| format!("{:?} ({:#06x})", e.error, e.error as i32));
+                // Permission-management commands (group add/remove, channel
+                // perm grant/revoke) resolve through PERM_OPS.
+                if let Some(token) = PERM_OPS.lock().remove(&handle.0) {
+                    push_diag(&format!(
+                        "perm op {}: server said ok={} {}",
+                        token,
+                        res.is_ok(),
+                        err_text.as_deref().unwrap_or("")
+                    ));
+                    STATE.lock().pending_events.push_back(TsEvent::PermOp {
+                        token,
+                        ok: res.is_ok(),
+                        error: err_text.clone(),
+                    });
+                }
                 if let Some(op) = FT_OPS.lock().remove(&handle.0) {
                     push_diag(&format!(
                         "ft op {}: server said ok={} {}",
@@ -1923,6 +2089,20 @@ fn handle_control_item(item: &StreamItem, con: &mut Connection, _generation: u64
                 SFX_ARMED.store(false, Ordering::Relaxed);
                 // Pending directory listings will never be answered now.
                 FT_LISTS.lock().clear();
+                // Same for perm-op return codes: the server forgot them, so
+                // the awaiting UI would otherwise run into its timeout. The
+                // tokens are drained FIRST (dropping the PERM_OPS guard
+                // before locking STATE — the MessageResult arm locks in that
+                // order too), then answered with a failure.
+                let stale_perm_tokens: Vec<String> =
+                    PERM_OPS.lock().drain().map(|(_, t)| t).collect();
+                for token in stale_perm_tokens {
+                    STATE.lock().pending_events.push_back(TsEvent::PermOp {
+                        token,
+                        ok: false,
+                        error: Some("connection lost".into()),
+                    });
+                }
                 // The output stream stays up during a temporary disconnect
                 // (the library reconnects on its own), so the connection_lost
                 // sound plays through it normally.
@@ -1990,6 +2170,7 @@ async fn event_loop(
             // listings are gone, and active workers notice via their sockets.
             FT_LISTS.lock().clear();
             FT_OPS.lock().clear();
+            PERM_OPS.lock().clear();
             *COMMAND_TX.lock() = None;
             }
             return;
@@ -2020,11 +2201,16 @@ async fn event_loop(
                     client_id,
                     channel_id,
                     password,
+                    token,
                 } => {
                     // Mark the move so a server rejection (which arrives
                     // without a return_code) can be attributed back to this
-                    // request — see the CommandError handling below.
-                    STATE.lock().pending_move = Some((channel_id, Instant::now()));
+                    // request — see the CommandError handling below. Only
+                    // remember moves of our own client: moving somebody else
+                    // must not arm the password-error attribution.
+                    if client_id as u32 == own_client_id_or_cache(&con) {
+                        STATE.lock().pending_move = Some((channel_id, Instant::now()));
+                    }
                     // TS3 expects cpw as base64(sha1(password)); never send
                     // plaintext over the wire.
                     let channel_password = password
@@ -2036,7 +2222,26 @@ async fn event_loop(
                         channel_id: ChannelId(channel_id),
                         channel_password,
                     };
-                    let _ = OutClientMoveMessage::new(&mut std::iter::once(part)).send(&mut con);
+                    // A token means "report back": ride the return_code path
+                    // so the sheet gets the server's real answer (success /
+                    // insufficient permission). Without a token this stays the
+                    // legacy fire-and-forget move (used by the channel-entry
+                    // password flow for ourselves, which is already reported
+                    // through MoveRejected).
+                    let result =
+                        OutClientMoveMessage::new(&mut std::iter::once(part))
+                            .send_with_result(&mut con);
+                    match token {
+                        Some(t) => perm_op_send(result, &t),
+                        None => {
+                            if result.is_err() {
+                                push_diag(&format!(
+                                    "move client {}: send failed",
+                                    client_id
+                                ));
+                            }
+                        }
+                    }
                 }
                 Command::SetMuted { input, output } => {
                     let part = OutClientUpdatePart {
@@ -2088,6 +2293,252 @@ async fn event_loop(
                     };
                     let _ =
                         OutClientPokeRequestMessage::new(&mut std::iter::once(part)).send(&mut con);
+                }
+                Command::KickClient {
+                    client_id,
+                    from_server,
+                    reason,
+                    token,
+                } => {
+                    let own_client_id = own_client_id_or_cache(&con);
+                    if client_id as u32 == own_client_id {
+                        // Self-protection: never kick ourselves even if the
+                        // UI somehow offered the action. (Dialog dismissal is
+                        // handled in the UI layer and never reaches us; an
+                        // empty reason is a deliberate no-reason kick.)
+                        push_diag("kick client: skipped (cannot kick self)");
+                        if let Some(t) = token {
+                            STATE.lock().pending_events.push_back(TsEvent::PermOp {
+                                token: t,
+                                ok: false,
+                                error: Some("cannot kick yourself".into()),
+                            });
+                        }
+                    } else {
+                        // reasonmsg is optional on the wire — an empty reason
+                        // is sent as a kick without a reason message.
+                        let part = OutClientKickPart {
+                            client_id: ClientId(client_id),
+                            reason: if from_server {
+                                tsclientlib::Reason::KickServer
+                            } else {
+                                tsclientlib::Reason::KickChannel
+                            },
+                            reason_message: if reason.is_empty() {
+                                None
+                            } else {
+                                Some(Cow::Owned(reason))
+                            },
+                        };
+                        push_diag(&format!(
+                            "kick client {} (from_server={}): sent",
+                            client_id, from_server
+                        ));
+                        let result =
+                            OutClientKickMessage::new(&mut std::iter::once(part))
+                                .send_with_result(&mut con);
+                        match token {
+                            Some(t) => perm_op_send(result, &t),
+                            None => {
+                                if result.is_err() {
+                                    push_diag(&format!(
+                                        "kick client {}: send failed",
+                                        client_id
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                Command::BanClient {
+                    client_id,
+                    time_seconds,
+                    reason,
+                    token,
+                } => {
+                    let own_client_id = own_client_id_or_cache(&con);
+                    if reason.is_empty() && time_seconds == 0 {
+                        push_diag("ban client: skipped (no reason / permanent-by-accident)");
+                        if let Some(t) = token {
+                            STATE.lock().pending_events.push_back(TsEvent::PermOp {
+                                token: t,
+                                ok: false,
+                                error: Some("skip: empty reason (permanent ban)".into()),
+                            });
+                        }
+                    } else if client_id as u32 == own_client_id {
+                        push_diag("ban client: skipped (cannot ban self)");
+                        if let Some(t) = token {
+                            STATE.lock().pending_events.push_back(TsEvent::PermOp {
+                                token: t,
+                                ok: false,
+                                error: Some("cannot ban yourself".into()),
+                            });
+                        }
+                    } else {
+                        let part = OutBanClientPart {
+                            client_id: ClientId(client_id),
+                            time: if time_seconds > 0 {
+                                Some(time::Duration::seconds(time_seconds as i64))
+                            } else {
+                                None // permanent ban
+                            },
+                            ban_reason: Some(Cow::Owned(reason)),
+                        };
+                        push_diag(&format!(
+                            "ban client {} ({}s): sent",
+                            client_id, time_seconds
+                        ));
+                        let result =
+                            OutBanClientMessage::new(&mut std::iter::once(part))
+                                .send_with_result(&mut con);
+                        match token {
+                            Some(t) => perm_op_send(result, &t),
+                            None => {
+                                if result.is_err() {
+                                    push_diag(&format!(
+                                        "ban client {}: send failed",
+                                        client_id
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── Permission management ────────────────────────────────
+                Command::ServerGroupAddClient { sgid, dbid, token } => {
+                    let part = OutServerGroupAddClientPart {
+                        server_group_id: tsclientlib::ServerGroupId(sgid),
+                        client_db_id: tsclientlib::ClientDbId(dbid),
+                    };
+                    perm_op_send(
+                        OutServerGroupAddClientMessage::new(&mut std::iter::once(part))
+                            .send_with_result(&mut con),
+                        &token,
+                    );
+                }
+                Command::ServerGroupDelClient { sgid, dbid, token } => {
+                    let part = OutServerGroupDelClientPart {
+                        server_group_id: tsclientlib::ServerGroupId(sgid),
+                        client_db_id: tsclientlib::ClientDbId(dbid),
+                    };
+                    perm_op_send(
+                        OutServerGroupDelClientMessage::new(&mut std::iter::once(part))
+                            .send_with_result(&mut con),
+                        &token,
+                    );
+                }
+                Command::ChannelGroupSet { cgid, cid, dbid, token } => {
+                    // `channelgroupaddclient` is not declared in the vendored
+                    // tsdeclarations — build the packet by hand (same pattern
+                    // as the ft commands).
+                    let mut packet = OutCommand::new(
+                        Direction::C2S,
+                        Flags::empty(),
+                        PacketType::Command,
+                        "channelgroupaddclient",
+                    );
+                    packet.write_arg("cgid", &cgid);
+                    packet.write_arg("cid", &cid);
+                    packet.write_arg("cldbid", &dbid);
+                    perm_op_send(RawCmd(packet).send_with_result(&mut con), &token);
+                }
+                Command::ChannelGroupClear { cid, dbid, token } => {
+                    let mut packet = OutCommand::new(
+                        Direction::C2S,
+                        Flags::empty(),
+                        PacketType::Command,
+                        "channelgroupdelclient",
+                    );
+                    packet.write_arg("cid", &cid);
+                    packet.write_arg("cldbid", &dbid);
+                    perm_op_send(RawCmd(packet).send_with_result(&mut con), &token);
+                }
+                Command::GrantChannelPerm { cid, dbid, permsid, value, token } => {
+                    let part = OutChannelClientAddPermPart {
+                        channel_id: tsclientlib::ChannelId(cid as u64),
+                        client_db_id: tsclientlib::ClientDbId(dbid),
+                        permission_id: None,
+                        permission_name_id: Some(Cow::Owned(permsid)),
+                        permission_value: value,
+                    };
+                    perm_op_send(
+                        OutChannelClientAddPermMessage::new(&mut std::iter::once(part))
+                            .send_with_result(&mut con),
+                        &token,
+                    );
+                }
+                Command::RevokeChannelPerm { cid, dbid, permsid, token } => {
+                    let part = OutChannelClientDelPermPart {
+                        channel_id: tsclientlib::ChannelId(cid as u64),
+                        client_db_id: tsclientlib::ClientDbId(dbid),
+                        permission_id: None,
+                        permission_name_id: Some(Cow::Owned(permsid)),
+                    };
+                    perm_op_send(
+                        OutChannelClientDelPermMessage::new(&mut std::iter::once(part))
+                            .send_with_result(&mut con),
+                        &token,
+                    );
+                }
+                Command::GrantServerPerm { dbid, permsid, value, token } => {
+                    // Server-wide permission (`clientaddperm`): applies to the
+                    // client everywhere, not just one channel.
+                    let part = OutClientAddPermPart {
+                        client_db_id: tsclientlib::ClientDbId(dbid),
+                        permission_id: None,
+                        permission_name_id: Some(Cow::Owned(permsid)),
+                        permission_value: value,
+                        permission_skip: false,
+                    };
+                    perm_op_send(
+                        OutClientAddPermMessage::new(&mut std::iter::once(part))
+                            .send_with_result(&mut con),
+                        &token,
+                    );
+                }
+                Command::RevokeServerPerm { dbid, permsid, token } => {
+                    let part = OutClientDelPermPart {
+                        client_db_id: tsclientlib::ClientDbId(dbid),
+                        permission_id: None,
+                        permission_name_id: Some(Cow::Owned(permsid)),
+                    };
+                    perm_op_send(
+                        OutClientDelPermMessage::new(&mut std::iter::once(part))
+                            .send_with_result(&mut con),
+                        &token,
+                    );
+                }
+                Command::RefreshGroups => {
+                    let _ = OutServerGroupListRequestMessage::new().send(&mut con);
+                    let _ = OutChannelGroupListRequestMessage::new().send(&mut con);
+                    push_diag("perm: re-requested server/channel group lists");
+                }
+                Command::OwnPermList => {
+                    // (Re-)request our own directly-assigned permissions.
+                    let (own_id, own_dbid) = {
+                        let state = STATE.lock();
+                        let own_dbid = state
+                            .clients
+                            .iter()
+                            .find(|c| c.id as u32 == state.own_client_id)
+                            .map(|c| c.database_id)
+                            .unwrap_or(0);
+                        (state.own_client_id, own_dbid)
+                    };
+                    if own_dbid == 0 {
+                        push_diag(&format!(
+                            "own clientpermlist: database id unknown yet (own_id={})",
+                            own_id
+                        ));
+                    } else {
+                        let part = OutClientPermListRequestPart {
+                            client_db_id: tsclientlib::ClientDbId(own_dbid),
+                        };
+                        let _ = OutClientPermListRequestMessage::new(&mut std::iter::once(part))
+                            .send(&mut con);
+                        push_diag("own clientpermlist: requested");
+                    }
                 }
                 Command::FtList { cid, path, password, token } => {
                     // Hand-built so `cpw` is omitted for unlocked channels
@@ -2303,6 +2754,7 @@ async fn event_loop(
             // listings are gone, and active workers notice via their sockets.
             FT_LISTS.lock().clear();
             FT_OPS.lock().clear();
+            PERM_OPS.lock().clear();
             *COMMAND_TX.lock() = None;
                     }
                     return;
@@ -2422,6 +2874,7 @@ async fn event_loop(
             // listings are gone, and active workers notice via their sockets.
             FT_LISTS.lock().clear();
             FT_OPS.lock().clear();
+            PERM_OPS.lock().clear();
             *COMMAND_TX.lock() = None;
                 }
                 // The stream errored out (same termination as Ok(None)):
@@ -2455,6 +2908,7 @@ async fn event_loop(
             // listings are gone, and active workers notice via their sockets.
             FT_LISTS.lock().clear();
             FT_OPS.lock().clear();
+            PERM_OPS.lock().clear();
             *COMMAND_TX.lock() = None;
                 }
                 // The stream is truly over — do not fall through to the
@@ -2498,6 +2952,7 @@ async fn event_loop(
             // listings are gone, and active workers notice via their sockets.
             FT_LISTS.lock().clear();
             FT_OPS.lock().clear();
+            PERM_OPS.lock().clear();
             *COMMAND_TX.lock() = None;
                     }
                     // The stream errored out — return immediately instead of
@@ -2552,6 +3007,7 @@ async fn event_loop(
             // listings are gone, and active workers notice via their sockets.
             FT_LISTS.lock().clear();
             FT_OPS.lock().clear();
+            PERM_OPS.lock().clear();
             *COMMAND_TX.lock() = None;
             }
             return;
@@ -2762,6 +3218,7 @@ pub extern "C" fn ts_move_to_channel(cid: u32, password: *const c_char) -> u8 {
                 client_id: own_id as u16,
                 channel_id: cid as u64,
                 password,
+                token: None,
             })
             .is_ok()
         {
@@ -2985,6 +3442,362 @@ pub extern "C" fn ts_send_poke(client_id: u16, msg: *const c_char) -> u8 {
         } else {
             0
         }
+    } else {
+        0
+    }
+}
+
+/// Kick a client from the current channel (from_server=0) or from the whole
+/// server (from_server=1). `reason` is optional (an empty reason cancels the
+/// kick — the event loop treats it as a no-op). `token` is optional: when
+/// non-empty the server's answer resolves the matching `PermOp` event.
+/// Returns 1 when the command was queued, 0 when not connected.
+#[no_mangle]
+pub extern "C" fn ts_kick_client(
+    client_id: u16,
+    from_server: u8,
+    reason: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    let reason = if reason.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(reason) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let token = unsafe { read_cstr(token) };
+    let token = if token.is_empty() { None } else { Some(token) };
+    if !STATE.lock().connected {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::KickClient {
+                client_id,
+                from_server: from_server != 0,
+                reason,
+                token,
+            })
+            .is_ok()
+        {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+/// Ban a client. `time_seconds == 0` means an indefinite (permanent) ban.
+/// `reason` is optional. `token` is optional (see `ts_kick_client`).
+/// Returns 1 when the command was queued, 0 when not connected.
+#[no_mangle]
+pub extern "C" fn ts_ban_client(
+    client_id: u16,
+    time_seconds: u32,
+    reason: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    let reason = if reason.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(reason) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let token = unsafe { read_cstr(token) };
+    let token = if token.is_empty() { None } else { Some(token) };
+    if !STATE.lock().connected {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::BanClient {
+                client_id,
+                time_seconds,
+                reason,
+                token,
+            })
+            .is_ok()
+        {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+/// Move a client (or ourselves) to another channel. `password` is the
+/// channel password when the target channel is locked. `token` is optional
+/// (see `ts_kick_client`); when non-empty the caller gets a `PermOp` answer.
+/// Returns 1 when the command was queued, 0 when not connected.
+#[no_mangle]
+pub extern "C" fn ts_move_client(
+    client_id: u16,
+    channel_id: u32,
+    password: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    let password = if password.is_null() {
+        None
+    } else {
+        let s = unsafe { std::ffi::CStr::from_ptr(password) }
+            .to_string_lossy()
+            .into_owned();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+    let token = unsafe { read_cstr(token) };
+    let token = if token.is_empty() { None } else { Some(token) };
+    if !STATE.lock().connected {
+        return 0;
+    }
+    let tx = COMMAND_TX.lock();
+    if let Some(tx) = tx.as_ref() {
+        if tx
+            .send(Command::MoveChannel {
+                client_id,
+                channel_id: channel_id as u64,
+                password,
+                token,
+            })
+            .is_ok()
+        {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+// ─── Permission management ──────────────────────────────────────────
+
+/// Read a NUL-terminated C string as an owned String ("" for NULL).
+unsafe fn read_cstr(p: *const c_char) -> String {
+    if p.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+    }
+}
+
+/// Returns true when a connected command queue exists (drains into `tx`).
+fn try_send_cmd(cmd: Command) -> bool {
+    if !STATE.lock().connected {
+        return false;
+    }
+    let tx = COMMAND_TX.lock();
+    match tx.as_ref() {
+        Some(tx) => tx.send(cmd).is_ok(),
+        None => false,
+    }
+}
+
+/// All server groups known to the book (empty until `servergrouplist` was
+/// answered). JSON array of `TsServerGroup`.
+#[no_mangle]
+pub extern "C" fn ts_get_server_groups() -> *mut c_char {
+    let state = STATE.lock();
+    if !state.connected {
+        return to_c_str("[]".to_string());
+    }
+    to_c_str(serde_json::to_string(&state.server_groups).unwrap_or_else(|_| "[]".into()))
+}
+
+/// All channel groups known to the book (empty until `channelgrouplist` was
+/// answered). JSON array of `TsChannelGroup`.
+#[no_mangle]
+pub extern "C" fn ts_get_channel_groups() -> *mut c_char {
+    let state = STATE.lock();
+    if !state.connected {
+        return to_c_str("[]".to_string());
+    }
+    to_c_str(serde_json::to_string(&state.channel_groups).unwrap_or_else(|_| "[]".into()))
+}
+
+/// OUR OWN directly-assigned permissions from `clientpermlist` (requested on
+/// connect). JSON array of `TsPerm`; empty until the answer arrived. Note:
+/// only directly-assigned perms are listed (inherited/group values are NOT),
+/// so this is a low-threshold UI hint, not an authorization source.
+#[no_mangle]
+pub extern "C" fn ts_get_own_perms() -> *mut c_char {
+    let state = STATE.lock();
+    if !state.connected {
+        return to_c_str("[]".to_string());
+    }
+    to_c_str(serde_json::to_string(&state.own_perms).unwrap_or_else(|_| "[]".into()))
+}
+
+/// Re-request the server/channel group lists (retry after a missed answer).
+/// Returns 1 when the request was queued, 0 when not connected.
+#[no_mangle]
+pub extern "C" fn ts_refresh_groups() -> u8 {
+    if try_send_cmd(Command::RefreshGroups) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Add a client to a server group. The outcome arrives as a `perm_op` event
+/// carrying `token`. Returns 1 when queued, 0 when not connected.
+#[no_mangle]
+pub extern "C" fn ts_server_group_add_client(
+    dbid: u64,
+    sgid: u64,
+    token: *const c_char,
+) -> u8 {
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::ServerGroupAddClient { sgid, dbid, token }) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Remove a client from a server group.
+#[no_mangle]
+pub extern "C" fn ts_server_group_del_client(
+    dbid: u64,
+    sgid: u64,
+    token: *const c_char,
+) -> u8 {
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::ServerGroupDelClient { sgid, dbid, token }) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Set a client's channel group in a channel.
+#[no_mangle]
+pub extern "C" fn ts_channel_group_set(
+    dbid: u64,
+    cid: u32,
+    cgid: u64,
+    token: *const c_char,
+) -> u8 {
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::ChannelGroupSet {
+        cgid,
+        cid: cid as u64,
+        dbid,
+        token,
+    }) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Clear a client's channel group in a channel.
+#[no_mangle]
+pub extern "C" fn ts_channel_group_clear(dbid: u64, cid: u32, token: *const c_char) -> u8 {
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::ChannelGroupClear {
+        cid: cid as u64,
+        dbid,
+        token,
+    }) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Grant a channel-scoped permission (`permsid`, e.g. `i_client_talk_power`)
+/// to a client with the given value.
+#[no_mangle]
+pub extern "C" fn ts_channel_perm_grant(
+    dbid: u64,
+    cid: u32,
+    permsid: *const c_char,
+    value: i32,
+    token: *const c_char,
+) -> u8 {
+    let permsid = unsafe { read_cstr(permsid) };
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::GrantChannelPerm {
+        cid: cid as u64,
+        dbid,
+        permsid,
+        value,
+        token,
+    }) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Revoke a channel-scoped permission from a client.
+#[no_mangle]
+pub extern "C" fn ts_channel_perm_revoke(
+    dbid: u64,
+    cid: u32,
+    permsid: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    let permsid = unsafe { read_cstr(permsid) };
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::RevokeChannelPerm {
+        cid: cid as u64,
+        dbid,
+        permsid,
+        token,
+    }) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Grant a server-wide permission (`permsid`, e.g. `i_client_talk_power`) to
+/// a client with the given value — applies everywhere, not just one channel.
+#[no_mangle]
+pub extern "C" fn ts_server_perm_grant(
+    dbid: u64,
+    permsid: *const c_char,
+    value: i32,
+    token: *const c_char,
+) -> u8 {
+    let permsid = unsafe { read_cstr(permsid) };
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::GrantServerPerm {
+        dbid,
+        permsid,
+        value,
+        token,
+    }) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Revoke a server-wide permission from a client.
+#[no_mangle]
+pub extern "C" fn ts_server_perm_revoke(
+    dbid: u64,
+    permsid: *const c_char,
+    token: *const c_char,
+) -> u8 {
+    let permsid = unsafe { read_cstr(permsid) };
+    let token = unsafe { read_cstr(token) };
+    if try_send_cmd(Command::RevokeServerPerm { dbid, permsid, token }) {
+        1
     } else {
         0
     }

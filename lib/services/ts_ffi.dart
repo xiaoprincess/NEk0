@@ -121,6 +121,21 @@ typedef _SetAwayDart = int Function(int);
 typedef _SendPokeNative = Uint8 Function(Uint16, Pointer<Utf8>);
 typedef _SendPokeDart = int Function(int, Pointer<Utf8>);
 
+// ts_kick_client(client_id: u16, from_server: u8, reason, token) -> bool
+typedef _KickClientNative =
+    Uint8 Function(Uint16, Uint8, Pointer<Utf8>, Pointer<Utf8>);
+typedef _KickClientDart = int Function(int, int, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_ban_client(client_id: u16, time_seconds: u32, reason, token) -> bool
+typedef _BanClientNative =
+    Uint8 Function(Uint16, Uint32, Pointer<Utf8>, Pointer<Utf8>);
+typedef _BanClientDart = int Function(int, int, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_move_client(client_id: u16, channel_id: u32, password, token) -> bool
+typedef _MoveClientNative =
+    Uint8 Function(Uint16, Uint32, Pointer<Utf8>, Pointer<Utf8>);
+typedef _MoveClientDart = int Function(int, int, Pointer<Utf8>, Pointer<Utf8>);
+
 // ─── File transfer (channel file management) ────────────────────────
 
 // ts_ft_list(channel_id, path, password, token) -> bool
@@ -156,6 +171,58 @@ typedef _FtUploadDart =
 // ts_ft_cancel(task_id) -> bool
 typedef _FtCancelNative = Uint8 Function(Uint32);
 typedef _FtCancelDart = int Function(int);
+
+// ─── Permission management ──────────────────────────────────────────
+
+// ts_get_server_groups() / ts_get_channel_groups() -> *char (JSON array)
+typedef _GetGroupsNative = Pointer<Utf8> Function();
+typedef _GetGroupsDart = Pointer<Utf8> Function();
+
+// ts_refresh_groups() -> bool
+typedef _RefreshGroupsNative = Uint8 Function();
+typedef _RefreshGroupsDart = int Function();
+
+// ts_server_group_add_client(dbid: u64, sgid: u64, token) -> bool
+typedef _SgAddClientNative = Uint8 Function(Uint64, Uint64, Pointer<Utf8>);
+typedef _SgAddClientDart = int Function(int, int, Pointer<Utf8>);
+
+// ts_server_group_del_client(dbid: u64, sgid: u64, token) -> bool
+typedef _SgDelClientNative = Uint8 Function(Uint64, Uint64, Pointer<Utf8>);
+typedef _SgDelClientDart = int Function(int, int, Pointer<Utf8>);
+
+// ts_channel_group_set(dbid: u64, cid: u32, cgid: u64, token) -> bool
+typedef _CgSetNative = Uint8 Function(Uint64, Uint32, Uint64, Pointer<Utf8>);
+typedef _CgSetDart = int Function(int, int, int, Pointer<Utf8>);
+
+// ts_channel_group_clear(dbid: u64, cid: u32, token) -> bool
+typedef _CgClearNative = Uint8 Function(Uint64, Uint32, Pointer<Utf8>);
+typedef _CgClearDart = int Function(int, int, Pointer<Utf8>);
+
+// ts_channel_perm_grant(dbid: u64, cid: u32, permsid, value: i32, token) -> bool
+typedef _PermGrantNative =
+    Uint8 Function(Uint64, Uint32, Pointer<Utf8>, Int32, Pointer<Utf8>);
+typedef _PermGrantDart =
+    int Function(int, int, Pointer<Utf8>, int, Pointer<Utf8>);
+
+// ts_channel_perm_revoke(dbid: u64, cid: u32, permsid, token) -> bool
+typedef _PermRevokeNative =
+    Uint8 Function(Uint64, Uint32, Pointer<Utf8>, Pointer<Utf8>);
+typedef _PermRevokeDart = int Function(int, int, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_server_perm_grant(dbid: u64, permsid, value: i32, token) -> bool
+typedef _ServerPermGrantNative =
+    Uint8 Function(Uint64, Pointer<Utf8>, Int32, Pointer<Utf8>);
+typedef _ServerPermGrantDart =
+    int Function(int, Pointer<Utf8>, int, Pointer<Utf8>);
+
+// ts_server_perm_revoke(dbid: u64, permsid, token) -> bool
+typedef _ServerPermRevokeNative =
+    Uint8 Function(Uint64, Pointer<Utf8>, Pointer<Utf8>);
+typedef _ServerPermRevokeDart = int Function(int, Pointer<Utf8>, Pointer<Utf8>);
+
+// ts_get_own_perms() -> *char (JSON array of TsPerm)
+typedef _GetOwnPermsNative = Pointer<Utf8> Function();
+typedef _GetOwnPermsDart = Pointer<Utf8> Function();
 
 // ─── Bindings ───────────────────────────────────────────────────────
 
@@ -237,6 +304,15 @@ final _setAway = _lib.lookupFunction<_SetAwayNative, _SetAwayDart>(
 final _sendPoke = _lib.lookupFunction<_SendPokeNative, _SendPokeDart>(
   'ts_send_poke',
 );
+final _kickClient = _lib.lookupFunction<_KickClientNative, _KickClientDart>(
+  'ts_kick_client',
+);
+final _banClient = _lib.lookupFunction<_BanClientNative, _BanClientDart>(
+  'ts_ban_client',
+);
+final _moveClient = _lib.lookupFunction<_MoveClientNative, _MoveClientDart>(
+  'ts_move_client',
+);
 final _ftList = _lib.lookupFunction<_FtListNative, _FtListDart>('ts_ft_list');
 final _ftMkDir = _lib.lookupFunction<_FtMkDirNative, _FtMkDirDart>(
   'ts_ft_mkdir',
@@ -253,6 +329,45 @@ final _ftUpload = _lib.lookupFunction<_FtUploadNative, _FtUploadDart>(
 final _ftCancel = _lib.lookupFunction<_FtCancelNative, _FtCancelDart>(
   'ts_ft_cancel',
 );
+final _getServerGroups = _lib.lookupFunction<_GetGroupsNative, _GetGroupsDart>(
+  'ts_get_server_groups',
+);
+final _getChannelGroups = _lib.lookupFunction<_GetGroupsNative, _GetGroupsDart>(
+  'ts_get_channel_groups',
+);
+final _refreshGroups = _lib
+    .lookupFunction<_RefreshGroupsNative, _RefreshGroupsDart>(
+      'ts_refresh_groups',
+    );
+final _getOwnPerms = _lib.lookupFunction<_GetOwnPermsNative, _GetOwnPermsDart>(
+  'ts_get_own_perms',
+);
+final _sgAddClient = _lib.lookupFunction<_SgAddClientNative, _SgAddClientDart>(
+  'ts_server_group_add_client',
+);
+final _sgDelClient = _lib.lookupFunction<_SgDelClientNative, _SgDelClientDart>(
+  'ts_server_group_del_client',
+);
+final _cgSet = _lib.lookupFunction<_CgSetNative, _CgSetDart>(
+  'ts_channel_group_set',
+);
+final _cgClear = _lib.lookupFunction<_CgClearNative, _CgClearDart>(
+  'ts_channel_group_clear',
+);
+final _permGrant = _lib.lookupFunction<_PermGrantNative, _PermGrantDart>(
+  'ts_channel_perm_grant',
+);
+final _permRevoke = _lib.lookupFunction<_PermRevokeNative, _PermRevokeDart>(
+  'ts_channel_perm_revoke',
+);
+final _serverPermGrant = _lib
+    .lookupFunction<_ServerPermGrantNative, _ServerPermGrantDart>(
+      'ts_server_perm_grant',
+    );
+final _serverPermRevoke = _lib
+    .lookupFunction<_ServerPermRevokeNative, _ServerPermRevokeDart>(
+      'ts_server_perm_revoke',
+    );
 
 // ─── Helper ─────────────────────────────────────────────────────────
 
@@ -435,6 +550,65 @@ class TsNative {
     }
   }
 
+  /// Kick a client from the current channel ([fromServer] == false) or from
+  /// the whole server ([fromServer] == true). An empty [reason] cancels the
+  /// kick (the Rust side treats it as a no-op). [token] is optional: when
+  /// non-empty the server's answer resolves as a `perm_op` event carrying it.
+  static bool kickClient(
+    int clientId, {
+    required bool fromServer,
+    String reason = '',
+    String token = '',
+  }) {
+    debugLog('kickClient(client=$clientId, fromServer=$fromServer)');
+    final ptr = _strToPtr(reason);
+    final t = _strToPtr(token);
+    try {
+      return _kickClient(clientId, fromServer ? 1 : 0, ptr, t) != 0;
+    } finally {
+      malloc.free(ptr);
+      malloc.free(t);
+    }
+  }
+
+  /// Ban a client. [timeSeconds] == 0 means an indefinite (permanent) ban.
+  /// [token] is optional (see [kickClient]).
+  static bool banClient(
+    int clientId, {
+    required int timeSeconds,
+    String reason = '',
+    String token = '',
+  }) {
+    debugLog('banClient(client=$clientId, time=$timeSeconds)');
+    final ptr = _strToPtr(reason);
+    final t = _strToPtr(token);
+    try {
+      return _banClient(clientId, timeSeconds, ptr, t) != 0;
+    } finally {
+      malloc.free(ptr);
+      malloc.free(t);
+    }
+  }
+
+  /// Move a client (or ourselves) to another channel. [password] is used for
+  /// locked target channels. [token] is optional (see [kickClient]).
+  static bool moveClient(
+    int clientId,
+    int channelId, {
+    String? password,
+    String token = '',
+  }) {
+    debugLog('moveClient(client=$clientId, channel=$channelId)');
+    final ptr = _strToPtr(password);
+    final t = _strToPtr(token);
+    try {
+      return _moveClient(clientId, channelId, ptr, t) != 0;
+    } finally {
+      malloc.free(ptr);
+      malloc.free(t);
+    }
+  }
+
   // ─── File transfers ────────────────────────────────────────────────
 
   /// Requests a directory listing for a channel's file area. The answer
@@ -547,6 +721,139 @@ class TsNative {
   /// Cancels an active transfer task (cooperative — some bytes may already
   /// be on disk / on the wire).
   static bool ftCancel(int taskId) => _ftCancel(taskId) != 0;
+
+  // ─── Permission management ────────────────────────────────────────
+
+  /// All server groups known locally (JSON array; empty until the group
+  /// lists were answered by the server).
+  static List<Map<String, dynamic>> getServerGroups() {
+    final str = _ptrToString(_getServerGroups());
+    return (jsonDecode(str) as List).cast<Map<String, dynamic>>();
+  }
+
+  /// All channel groups known locally (JSON array).
+  static List<Map<String, dynamic>> getChannelGroups() {
+    final str = _ptrToString(_getChannelGroups());
+    return (jsonDecode(str) as List).cast<Map<String, dynamic>>();
+  }
+
+  /// Re-request the server/channel group lists. Returns true when queued.
+  static bool refreshGroups() => _refreshGroups() != 0;
+
+  /// OUR OWN directly-assigned permissions from `clientpermlist`. See
+  /// [perm.dart] `TsPerm` — only directly-assigned values are returned.
+  static List<Map<String, dynamic>> getOwnPerms() {
+    final str = _ptrToString(_getOwnPerms());
+    return (jsonDecode(str) as List).cast<Map<String, dynamic>>();
+  }
+
+  /// Add a client (by database id) to a server group. The outcome arrives
+  /// as a `perm_op` event carrying [token].
+  static bool serverGroupAddClient(int dbid, int sgid, String token) {
+    final t = _strToPtr(token);
+    try {
+      return _sgAddClient(dbid, sgid, t) != 0;
+    } finally {
+      malloc.free(t);
+    }
+  }
+
+  /// Remove a client from a server group.
+  static bool serverGroupDelClient(int dbid, int sgid, String token) {
+    final t = _strToPtr(token);
+    try {
+      return _sgDelClient(dbid, sgid, t) != 0;
+    } finally {
+      malloc.free(t);
+    }
+  }
+
+  /// Set a client's channel group in a channel.
+  static bool channelGroupSet(int dbid, int cid, int cgid, String token) {
+    final t = _strToPtr(token);
+    try {
+      return _cgSet(dbid, cid, cgid, t) != 0;
+    } finally {
+      malloc.free(t);
+    }
+  }
+
+  /// Clear a client's channel group in a channel.
+  static bool channelGroupClear(int dbid, int cid, String token) {
+    final t = _strToPtr(token);
+    try {
+      return _cgClear(dbid, cid, t) != 0;
+    } finally {
+      malloc.free(t);
+    }
+  }
+
+  /// Grant a channel-scoped permission (`permsid`, e.g.
+  /// `i_client_talk_power`) to a client with the given value.
+  static bool channelPermGrant(
+    int dbid,
+    int cid,
+    String permsid,
+    int value,
+    String token,
+  ) {
+    final p = _strToPtr(permsid);
+    final t = _strToPtr(token);
+    try {
+      return _permGrant(dbid, cid, p, value, t) != 0;
+    } finally {
+      malloc.free(p);
+      malloc.free(t);
+    }
+  }
+
+  /// Revoke a channel-scoped permission from a client.
+  static bool channelPermRevoke(
+    int dbid,
+    int cid,
+    String permsid,
+    String token,
+  ) {
+    final p = _strToPtr(permsid);
+    final t = _strToPtr(token);
+    try {
+      return _permRevoke(dbid, cid, p, t) != 0;
+    } finally {
+      malloc.free(p);
+      malloc.free(t);
+    }
+  }
+
+  /// Grant a server-wide permission (`permsid`, e.g. `i_client_talk_power`)
+  /// to a client with the given value — applies everywhere, not just one
+  /// channel. The outcome arrives as a `perm_op` event carrying [token].
+  static bool serverPermGrant(
+    int dbid,
+    String permsid,
+    int value,
+    String token,
+  ) {
+    final p = _strToPtr(permsid);
+    final t = _strToPtr(token);
+    try {
+      return _serverPermGrant(dbid, p, value, t) != 0;
+    } finally {
+      malloc.free(p);
+      malloc.free(t);
+    }
+  }
+
+  /// Revoke a server-wide permission from a client.
+  static bool serverPermRevoke(int dbid, String permsid, String token) {
+    final p = _strToPtr(permsid);
+    final t = _strToPtr(token);
+    try {
+      return _serverPermRevoke(dbid, p, t) != 0;
+    } finally {
+      malloc.free(p);
+      malloc.free(t);
+    }
+  }
 }
 
 void debugLog(String msg) {

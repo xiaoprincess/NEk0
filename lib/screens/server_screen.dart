@@ -7,8 +7,11 @@ import '../l10n/generated/app_localizations.dart';
 import '../models/app_settings.dart';
 import '../models/channel.dart';
 import '../models/client.dart';
+import '../models/group.dart';
+import '../models/privilege.dart';
 import '../models/ts_state.dart';
 import '../services/foreground_service.dart';
+import '../services/ts_ffi.dart';
 import '../widgets/channel_password_dialog.dart';
 import '../widgets/channel_tree.dart';
 import '../widgets/client_list.dart';
@@ -29,11 +32,36 @@ class ServerScreen extends ConsumerStatefulWidget {
 class _ServerScreenState extends ConsumerState<ServerScreen> {
   int _lastSeenMessageCount = 0;
 
+  /// Cached server-group list for the user-list privilege badges. Refreshed
+  /// only when the server (name) changes or the list is still empty (the
+  /// group list arrives shortly after connect, not with the first roster).
+  List<TsServerGroup> _serverGroups = const [];
+  String _serverGroupsKey = '';
+
   // Targets for the first-use spotlight guide.
   final GlobalKey _micKey = GlobalKey();
   final GlobalKey _speakerKey = GlobalKey();
   final GlobalKey _chatKey = GlobalKey();
   final GlobalKey _usersKey = GlobalKey();
+
+  /// Loads (and caches) the server group list for the privilege badges.
+  /// Cheap guard: only FFI when the server changed or the list is still
+  /// empty (which happens while the servergrouplist answer is in flight).
+  void _maybeRefreshServerGroups() {
+    final conn = ref.read(tsConnectionProvider);
+    if (!conn.connected) return;
+    if (_serverGroupsKey == conn.serverName && _serverGroups.isNotEmpty) {
+      return;
+    }
+    _serverGroupsKey = conn.serverName;
+    try {
+      _serverGroups = TsNative.getServerGroups()
+          .map(TsServerGroup.fromJson)
+          .toList();
+    } catch (_) {
+      _serverGroups = const [];
+    }
+  }
 
   /// Show the control-bar guide the first time the server screen is opened.
   /// Deferred to the first successful connect (see [_onConnected]) so the
@@ -109,6 +137,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
       }
     });
     final conn = ref.watch(tsConnectionProvider);
+    _maybeRefreshServerGroups();
     // Wrong password on a channel join: the selection was already rolled
     // back in ts_state — re-open the prompt with an error message and let
     // the user retry (or cancel to stay where they are).
@@ -241,6 +270,14 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
               child: ChannelTree(
                 channels: conn.channels,
                 selectedChannelId: conn.selectedChannelId,
+                // Our own talk power decides whether a channel's
+                // needed-talk-power bars us from speaking there.
+                ownTalkPower:
+                    conn.clients
+                        .where((c) => c.id == conn.ownClientId)
+                        .firstOrNull
+                        ?.talkPower ??
+                    0,
                 // Gesture swap from settings: default short tap joins and a
                 // long press opens the menu; swapped, the roles are reversed.
                 onChannelTap: gestureSwap ? _onChannelMenu : _onChannelTap,
@@ -282,6 +319,18 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                 child: ClientList(
                   clients: conn.clients,
                   currentChannelId: conn.selectedChannelId!,
+                  // Talk-power icons only appear in channels that restrict
+                  // talking (needed_talk_power > 0); otherwise the server's
+                  // `client_is_talker` flag would misreport every user.
+                  channelNeededTalkPower:
+                      conn.channels
+                          .where((c) => c.id == conn.selectedChannelId)
+                          .firstOrNull
+                          ?.neededTalkPower ??
+                      0,
+                  // Server groups for privileged-identity badges; empty
+                  // while the group list is unavailable.
+                  serverGroups: _serverGroups,
                   // Tapping yourself opens the same voice settings as
                   // long-pressing the mic; tapping others opens their
                   // per-client volume + poke sheet.
@@ -341,14 +390,56 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     final client = conn.clients.where((c) => c.id == clientId).firstOrNull;
     if (client == null) return;
 
+    // Diagnostics: log what the sheet gates on, so a stale native library
+    // (whose channel JSON lacks e.g. is_default) shows up in logcat instead
+    // of producing buttons that look like they "should have been hidden".
+    final targetChannel = conn.channels
+        .where((ch) => ch.id == client.channelId)
+        .firstOrNull;
+    debugPrint(
+      'TS: client sheet for ${client.id} (${client.nickname}): '
+      'channel=${client.channelId} isDefault=${targetChannel?.isDefault} '
+      'hints=${client.permissionHints}',
+    );
+
+    // Our own privilege tier (from server-group names) is the last-resort
+    // gate for the permission-management entries when neither the target's
+    // permission hints nor our clientpermlist are available yet.
+    final ownClient = conn.clients
+        .where((c) => c.id == conn.ownClientId)
+        .firstOrNull;
+    final ownGroupNames = _serverGroups
+        .where((g) => ownClient?.serverGroupIds.contains(g.id) ?? false)
+        .map((g) => g.name);
+    final ownPrivilegeTier = (ownClient?.isQueryAdmin ?? false)
+        ? PrivilegeTier.admin
+        : privilegeTierOf(ownGroupNames);
+
     showModalBottomSheet(
       context: context,
+      // The sheet holds up to 8 action buttons — without this the content is
+      // capped at ~9/16 of the screen and the bottom buttons overflow (and
+      // become unresponsive, since hit testing stops at the clipped bounds).
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF12122A),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
       ),
-      builder: (ctx) =>
-          _ClientVolumeSheet(client: client, notifier: connNotifier),
+      builder: (ctx) => _ClientVolumeSheet(
+        client: client,
+        notifier: connNotifier,
+        ownClientId: conn.ownClientId,
+        // We are a server-query admin: the permission-management entries are
+        // offered even before the hint bits arrive.
+        ownIsQueryAdmin: ownClient?.isQueryAdmin ?? false,
+        // Our own directly-assigned permissions include a management power
+        // (active permission detection — clientpermlist).
+        ownCanManagePermissions: ref
+            .read(tsConnectionProvider.notifier)
+            .canManagePermissions,
+        ownPrivilegeTier: ownPrivilegeTier,
+        channels: conn.channels,
+      ),
     );
   }
 
@@ -551,7 +642,35 @@ class _ClientVolumeSheet extends StatefulWidget {
   final TsClient client;
   final TsConnectionNotifier notifier;
 
-  const _ClientVolumeSheet({required this.client, required this.notifier});
+  /// The own client's id on the server — moderation actions are never
+  /// offered for ourselves.
+  final int ownClientId;
+
+  /// Whether we are a server-query admin — permission-management entries are
+  /// offered even before the client-permission hint bits arrive.
+  final bool ownIsQueryAdmin;
+
+  /// Whether our own directly-assigned permissions include a management
+  /// power (active permission detection via clientpermlist).
+  final bool ownCanManagePermissions;
+
+  /// Our own privilege tier from server-group names — last-resort gate for
+  /// the permission-management entries when permission hints and
+  /// clientpermlist are both unavailable.
+  final PrivilegeTier ownPrivilegeTier;
+
+  /// Snapshot of the channel roster for the move-to-channel picker.
+  final List<TsChannel> channels;
+
+  const _ClientVolumeSheet({
+    required this.client,
+    required this.notifier,
+    required this.ownClientId,
+    required this.ownIsQueryAdmin,
+    required this.ownCanManagePermissions,
+    required this.ownPrivilegeTier,
+    required this.channels,
+  });
 
   @override
   State<_ClientVolumeSheet> createState() => _ClientVolumeSheetState();
@@ -569,91 +688,250 @@ class _ClientVolumeSheetState extends State<_ClientVolumeSheet> {
   @override
   Widget build(BuildContext context) {
     final c = widget.client;
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Icon(
-                c.isTalking ? Icons.mic : Icons.person,
-                color: c.isTalking ? Colors.blue : Colors.grey,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                c.nickname,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+    final al = AppLocalizations.of(context);
+    final isSelf = c.id == widget.ownClientId;
+    // Scrollable so every action stays reachable even when all moderation +
+    // permission-management buttons are shown at once.
+    return SingleChildScrollView(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  c.isTalking ? Icons.mic : Icons.person,
+                  color: c.isTalking ? Colors.blue : Colors.grey,
+                  size: 20,
                 ),
-              ),
-              const Spacer(),
-              if (c.isTalking)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.3),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                const SizedBox(width: 8),
+                Expanded(
                   child: Text(
-                    AppLocalizations.of(context).talking,
-                    style: const TextStyle(color: Colors.blue, fontSize: 11),
+                    c.nickname,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Text(
-                AppLocalizations.of(context).volume,
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-              Expanded(
-                child: Slider(
-                  value: _volume,
-                  min: -20.0,
-                  max: 20.0,
-                  divisions: 80,
-                  activeColor: Colors.blue,
-                  onChanged: (v) {
-                    setState(() => _volume = v);
-                    widget.notifier.setClientVolume(c.id, v);
-                  },
+                if (c.isTalking)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha: 0.3),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      AppLocalizations.of(context).talking,
+                      style: const TextStyle(color: Colors.blue, fontSize: 11),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Text(
+                  AppLocalizations.of(context).volume,
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
                 ),
-              ),
-              SizedBox(
-                width: 52,
-                child: Text(
-                  '${_volume.toStringAsFixed(1)} dB',
-                  style: const TextStyle(color: Colors.grey, fontSize: 11),
+                Expanded(
+                  child: Slider(
+                    value: _volume,
+                    min: -20.0,
+                    max: 20.0,
+                    divisions: 80,
+                    activeColor: Colors.blue,
+                    onChanged: (v) {
+                      setState(() => _volume = v);
+                      widget.notifier.setClientVolume(c.id, v);
+                    },
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
+                SizedBox(
+                  width: 52,
+                  child: Text(
+                    '${_volume.toStringAsFixed(1)} dB',
+                    style: const TextStyle(color: Colors.grey, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            // ── Permission-gated actions (never for ourselves) ──
+            if (!isSelf && _hasAnyAction(c)) ...[
+              const Divider(height: 1, color: Color(0xFF2A2A4A)),
+              const SizedBox(height: 12),
+              if (_canShowPoke(c))
+                _actionButton(
+                  context,
+                  icon: Icons.notification_important,
+                  label: al.poke,
                   onPressed: () => _showPokeDialog(context),
-                  icon: const Icon(Icons.notification_important, size: 18),
-                  label: Text(AppLocalizations.of(context).poke),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.blueAccent,
-                    side: const BorderSide(color: Color(0xFF2A2A4A)),
-                  ),
                 ),
+              if (_canShowAction(c, c.canMoveClient))
+                _actionButton(
+                  context,
+                  icon: Icons.drive_file_move_outline,
+                  label: al.menuMoveToChannel,
+                  onPressed: () => _showMoveToChannelSheet(context),
+                ),
+              if (_canShowChannelKick(c))
+                _actionButton(
+                  context,
+                  icon: Icons.logout,
+                  label: al.menuKickFromChannel,
+                  onPressed: () => _showKickDialog(context, fromServer: false),
+                ),
+              if (_canShowAction(c, c.canKickServer))
+                _actionButton(
+                  context,
+                  icon: Icons.remove_circle_outline,
+                  label: al.menuKickFromServer,
+                  onPressed: () => _showKickDialog(context, fromServer: true),
+                ),
+              if (_canShowAction(c, c.canBan))
+                _actionButton(
+                  context,
+                  icon: Icons.gavel,
+                  label: al.menuBan,
+                  onPressed: () => _showBanDialog(context),
+                ),
+            ],
+            // ── Permission management (never for ourselves) ──
+            if (!isSelf && _hasPermActions(c)) ...[
+              const Divider(height: 1, color: Color(0xFF2A2A4A)),
+              const SizedBox(height: 12),
+              _actionButton(
+                context,
+                icon: Icons.groups,
+                label: al.menuServerGroups,
+                onPressed: () =>
+                    _requireDbid(() => _showServerGroupsDialog(context)),
+              ),
+              _actionButton(
+                context,
+                icon: Icons.badge_outlined,
+                label: al.menuChannelGroups,
+                onPressed: () =>
+                    _requireDbid(() => _showChannelGroupsDialog(context)),
+              ),
+              _actionButton(
+                context,
+                icon: Icons.admin_panel_settings_outlined,
+                label: al.menuGrantRevokePerms,
+                onPressed: () =>
+                    _requireDbid(() => _showGrantPermDialog(context)),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Poke is low-risk: when the permission hints have not arrived yet
+  /// (`permissionHints == 0`) it is shown by default; once hints are known,
+  /// the POKE bit gates it.
+  bool _canShowPoke(TsClient c) => c.permissionHints == 0 || c.canPoke;
+
+  /// Moderation actions are "unknown → optimistic": while the server has not
+  /// pushed the client's permission-hint bits (`permissionHints == 0`) the
+  /// action is shown and the server's real answer (which now arrives as a
+  /// `perm_op` receipt) decides. Once the hints are known, the bit gates it.
+  bool _canShowAction(TsClient c, bool granted) =>
+      c.permissionHints == 0 || granted;
+
+  /// A channel kick moves its target to the server's default channel — for a
+  /// client already sitting there the server always rejects it, so the action
+  /// is hidden entirely instead of failing at runtime.
+  bool _canShowChannelKick(TsClient c) =>
+      _canShowAction(c, c.canKickChannel) && !_targetInDefaultChannel;
+
+  /// Whether this client's current channel is the default channel (unknown
+  /// channel → show the action optimistically; the server's receipt decides).
+  bool get _targetInDefaultChannel =>
+      (widget.channels
+          .where((ch) => ch.id == widget.client.channelId)
+          .firstOrNull
+          ?.isDefault) ??
+      false;
+
+  bool _hasAnyAction(TsClient c) =>
+      _canShowPoke(c) ||
+      _canShowAction(c, c.canMoveClient) ||
+      _canShowChannelKick(c) ||
+      _canShowAction(c, c.canKickServer) ||
+      _canShowAction(c, c.canBan);
+
+  /// Permission-management entries are offered when the server hints arrived,
+  /// we are a query admin, our own directly-assigned permissions include a
+  /// management power (active permission detection), or our own server-group
+  /// name tier suggests moderation rights (last resort when both the hints
+  /// and the clientpermlist answers are unavailable).
+  bool _hasPermActions(TsClient c) =>
+      c.permissionHints != 0 ||
+      widget.ownIsQueryAdmin ||
+      widget.ownCanManagePermissions ||
+      widget.ownPrivilegeTier != PrivilegeTier.none;
+
+  /// Group/perm commands need the target's database id; block with a hint
+  /// while it is unknown.
+  void _requireDbid(VoidCallback action) {
+    if (widget.client.databaseId == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context).dbIdUnavailable),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    action();
+  }
+
+  /// Shows the result of a permission operation: green on success, red with
+  /// the server's reason on failure.
+  void _reportPermOp(
+    BuildContext context,
+    String? error, {
+    required String okLabel,
+  }) {
+    final al = AppLocalizations.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(error == null ? okLabel : al.permOpFailed(error)),
+        backgroundColor: error == null ? null : Colors.red.shade900,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Widget _actionButton(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: onPressed,
+          icon: Icon(icon, size: 18),
+          label: Text(label),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.blueAccent,
+            side: const BorderSide(color: Color(0xFF2A2A4A)),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -661,40 +939,10 @@ class _ClientVolumeSheetState extends State<_ClientVolumeSheet> {
   /// Ask for a poke message and send it to this client.
   Future<void> _showPokeDialog(BuildContext context) async {
     final al = AppLocalizations.of(context);
-    final controller = TextEditingController();
     final msg = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A2E),
-        title: Text(
-          al.poke,
-          style: const TextStyle(color: Colors.white, fontSize: 18),
-        ),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: al.pokeHint,
-            hintStyle: const TextStyle(color: Colors.grey),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(al.cancel, style: const TextStyle(color: Colors.grey)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
-            child: Text(
-              al.send,
-              style: const TextStyle(color: Colors.blueAccent),
-            ),
-          ),
-        ],
-      ),
+      builder: (ctx) => const _PokeDialog(),
     );
-    controller.dispose();
     final text = msg?.trim() ?? '';
     // An empty poke is allowed (TeamSpeak pokes without a message). Only
     // skip when the widget is gone.
@@ -704,6 +952,1112 @@ class _ClientVolumeSheetState extends State<_ClientVolumeSheet> {
       SnackBar(
         content: Text(al.pokeSent),
         duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Channel picker for "move to channel": excludes the client's current
+  /// channel. Uses the roster snapshot passed into the sheet.
+  Future<void> _showMoveToChannelSheet(BuildContext context) async {
+    final al = AppLocalizations.of(context);
+    final candidates = widget.channels
+        .where((ch) => ch.id != widget.client.channelId)
+        .toList();
+    if (candidates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(al.noChannels),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    final targetId = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: const Color(0xFF12122A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              margin: const EdgeInsets.only(top: 10, bottom: 6),
+              decoration: BoxDecoration(
+                color: Colors.grey.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.drive_file_move_outline,
+                    size: 16,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${al.menuMoveToChannel} · ${widget.client.nickname}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: Color(0xFF2A2A4A)),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: candidates.length,
+                itemBuilder: (ctx, i) {
+                  final ch = candidates[i];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(
+                      Icons.tag,
+                      size: 16,
+                      color: Colors.grey,
+                    ),
+                    title: Text(
+                      ch.name,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onTap: () => Navigator.of(ctx).pop(ch.id),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || targetId == null) return;
+    // The server's real answer arrives through the perm_op receipt — show it
+    // (green on accept, red with the server's reason on rejection).
+    final error = await widget.notifier.moveClient(widget.client.id, targetId);
+    if (!mounted) return;
+    _reportPermOp(context, error, okLabel: al.moveSucceeded);
+  }
+
+  /// Confirm dialog for kicking a client from the channel or the server.
+  /// The reason is optional — an empty reason kicks without a reason
+  /// message (the server accepts that); only dismissing cancels.
+  Future<void> _showKickDialog(
+    BuildContext context, {
+    required bool fromServer,
+  }) async {
+    final al = AppLocalizations.of(context);
+    // The dialog pops the trimmed reason itself: null = dismissed,
+    // empty = "start" pressed without a reason (a valid no-reason kick).
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) =>
+          _KickDialog(nickname: widget.client.nickname, fromServer: fromServer),
+    );
+    // The dialog outcomes are otherwise invisible in logs (a dismissal
+    // returns without any receipt), which makes "kick did nothing"
+    // undiagnosable from logcat alone.
+    debugPrint(
+      'TS: kick dialog for client ${widget.client.id} returned: '
+      '${reason == null
+          ? 'dismissed'
+          : reason.isEmpty
+          ? 'confirmed (no reason)'
+          : 'confirmed'}',
+    );
+    if (!mounted || reason == null) return;
+    final error = await widget.notifier.kickClient(
+      widget.client.id,
+      fromServer: fromServer,
+      reason: reason,
+    );
+    if (!mounted) return;
+    // Green on the server's accept, red with its reason on rejection.
+    _reportPermOp(context, error, okLabel: al.kickSent);
+  }
+
+  /// Ban dialog: duration presets + optional reason. `timeSeconds == 0`
+  /// means a permanent ban; an empty reason cancels the ban.
+  Future<void> _showBanDialog(BuildContext context) async {
+    final al = AppLocalizations.of(context);
+    // The dialog pops a (seconds, reason) record: null = dismissed.
+
+    final result = await showDialog<(int, String)>(
+      context: context,
+      builder: (ctx) => _BanDialog(nickname: widget.client.nickname),
+    );
+    if (!mounted || result == null) return;
+    final (seconds, reason) = result;
+    // Empty reason cancels the ban (permanent bans especially need a reason).
+    if (reason.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(al.banCanceled),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    final error = await widget.notifier.banClient(
+      widget.client.id,
+      timeSeconds: seconds,
+      reason: reason,
+    );
+    if (!mounted) return;
+    // Green on the server's accept, red with its reason on rejection.
+    _reportPermOp(context, error, okLabel: al.banSent);
+  }
+
+  // ─── Permission management dialogs ────────────────────────────────
+
+  /// Loads the server groups from Rust (asking the server again on the
+  /// retry path via its onRetry hook).
+  Future<List<TsServerGroup>> _loadServerGroups() async {
+    final raw = TsNative.getServerGroups();
+    return raw.map(TsServerGroup.fromJson).toList();
+  }
+
+  Future<List<TsChannelGroup>> _loadChannelGroups() async {
+    final raw = TsNative.getChannelGroups();
+    return raw.map(TsChannelGroup.fromJson).toList();
+  }
+
+  /// "Grant permissions (server groups)": checkbox list — checked = the
+  /// client is a member. Toggling sends add/remove immediately and awaits
+  /// the server's answer before re-reading the roster hint.
+  Future<void> _showServerGroupsDialog(BuildContext context) async {
+    final al = AppLocalizations.of(context);
+    final dbid = widget.client.databaseId;
+
+    List<TsServerGroup> groups;
+    try {
+      groups = await _loadServerGroups();
+    } catch (_) {
+      groups = const [];
+    }
+    if (!mounted) return;
+
+    // Membership snapshot — starts from the roster, updated after each op.
+    final memberIds = Set<int>.of(widget.client.serverGroupIds);
+    // Group ids with an in-flight operation — hoisted so rebuilds keep the
+    // double-tap guard alive.
+    final busy = <int>{};
+
+    await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF12122A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 10, bottom: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.groups, size: 16, color: Colors.grey),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${al.menuServerGroups} · ${widget.client.nickname}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1, color: Color(0xFF2A2A4A)),
+                if (groups.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      children: [
+                        Text(
+                          al.groupsNotLoaded,
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            TsNative.refreshGroups();
+                            Navigator.of(ctx).pop();
+                            // Re-open after a short delay so the answer has a
+                            // chance to arrive.
+                            Future.delayed(
+                              const Duration(milliseconds: 800),
+                              () => _showServerGroupsDialog(context),
+                            );
+                          },
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: Text(al.retry),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: groups.length,
+                      itemBuilder: (lctx, i) {
+                        final g = groups[i];
+                        final isMember = memberIds.contains(g.id);
+                        final isBusy = busy.contains(g.id);
+                        return CheckboxListTile(
+                          dense: true,
+                          value: isMember,
+                          onChanged: isBusy
+                              ? null
+                              : (checked) async {
+                                  busy.add(g.id);
+                                  setSheetState(() {});
+                                  final error = (checked ?? false)
+                                      ? await widget.notifier.addToServerGroup(
+                                          dbid,
+                                          g.id,
+                                        )
+                                      : await widget.notifier
+                                            .removeFromServerGroup(dbid, g.id);
+                                  busy.remove(g.id);
+                                  if (!mounted) return;
+                                  if (error == null) {
+                                    if (checked ?? false) {
+                                      memberIds.add(g.id);
+                                    } else {
+                                      memberIds.remove(g.id);
+                                    }
+                                    setSheetState(() {});
+                                    _reportPermOp(
+                                      context,
+                                      null,
+                                      okLabel: al.permOpSucceeded,
+                                    );
+                                  } else {
+                                    setSheetState(() {});
+                                    _reportPermOp(
+                                      context,
+                                      error,
+                                      okLabel: al.permOpSucceeded,
+                                    );
+                                  }
+                                },
+                          title: Text(
+                            g.name,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                            ),
+                          ),
+                          secondary: isBusy
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : null,
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// "Channel group": radio list of all channel groups + a "clear group"
+  /// entry. Applies to the client's CURRENT channel.
+  Future<void> _showChannelGroupsDialog(BuildContext context) async {
+    final al = AppLocalizations.of(context);
+    final dbid = widget.client.databaseId;
+    final cid = widget.client.channelId;
+
+    List<TsChannelGroup> groups;
+    try {
+      groups = await _loadChannelGroups();
+    } catch (_) {
+      groups = const [];
+    }
+    if (!mounted) return;
+
+    var current = widget.client.channelGroupId;
+
+    await showModalBottomSheet<Object?>(
+      context: context,
+      backgroundColor: const Color(0xFF12122A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          Future<void> apply(int? cgid) async {
+            final error = cgid == null
+                ? await widget.notifier.clearChannelGroup(dbid, cid)
+                : await widget.notifier.setChannelGroup(dbid, cgid, cid);
+            if (!mounted) return;
+            if (error == null) {
+              current = cgid ?? 0;
+              setSheetState(() {});
+              _reportPermOp(context, null, okLabel: al.permOpSucceeded);
+            } else {
+              _reportPermOp(context, error, okLabel: al.permOpSucceeded);
+            }
+          }
+
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 10, bottom: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.badge_outlined,
+                        size: 16,
+                        color: Colors.grey,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${al.menuChannelGroups} · ${widget.client.nickname}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1, color: Color(0xFF2A2A4A)),
+                if (groups.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      children: [
+                        Text(
+                          al.groupsNotLoaded,
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            TsNative.refreshGroups();
+                            Navigator.of(ctx).pop();
+                            Future.delayed(
+                              const Duration(milliseconds: 800),
+                              () => _showChannelGroupsDialog(context),
+                            );
+                          },
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: Text(al.retry),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: RadioGroup<int>(
+                      groupValue: current,
+                      onChanged: (v) => apply(v),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: groups.length + 1,
+                        itemBuilder: (lctx, i) {
+                          if (i == 0) {
+                            // "None" — the group is inherited/default, not set.
+                            return RadioListTile<int>(
+                              dense: true,
+                              value: 0,
+                              title: Text(
+                                al.channelGroupNone,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            );
+                          }
+                          final g = groups[i - 1];
+                          return RadioListTile<int>(
+                            dense: true,
+                            value: g.id,
+                            title: Text(
+                              g.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// "Grant / revoke permissions": two scopes —
+  /// - channel permissions (`channelclientaddperm`, applies in the target's
+  ///   current channel),
+  /// - server-wide permissions (`clientaddperm`, applies everywhere).
+  /// Each scope offers presets (talk power, priority speaker, channel
+  /// commander) plus a custom permsid + value entry.
+  Future<void> _showGrantPermDialog(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF12122A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      builder: (ctx) =>
+          _GrantPermDialog(client: widget.client, notifier: widget.notifier),
+    );
+  }
+}
+
+/// One permission preset row in the grant/revoke dialog.
+class _PermPreset {
+  final String label;
+  final String permsid;
+  int grantValue;
+  final List<int> valueChoices;
+  final String currentHint;
+
+  _PermPreset({
+    required this.label,
+    required this.permsid,
+    required this.grantValue,
+    required this.valueChoices,
+    required this.currentHint,
+  });
+}
+
+/// Poke-message prompt. Owns its [TextEditingController] so it outlives the
+/// dialog's exit transition ([State.dispose] runs only after the route's widget
+/// tree has stopped rebuilding), preventing "used after being disposed"
+/// crashes during the animated close frames.
+class _PokeDialog extends StatefulWidget {
+  const _PokeDialog();
+
+  @override
+  State<_PokeDialog> createState() => _PokeDialogState();
+}
+
+class _PokeDialogState extends State<_PokeDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final al = AppLocalizations.of(context);
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1A1A2E),
+      title: Text(
+        al.poke,
+        style: const TextStyle(color: Colors.white, fontSize: 18),
+      ),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          hintText: al.pokeHint,
+          hintStyle: const TextStyle(color: Colors.grey),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(al.cancel, style: const TextStyle(color: Colors.grey)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: Text(
+            al.send,
+            style: const TextStyle(color: Colors.blueAccent),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Kick-reason prompt. Pops the trimmed reason (or null when dismissed).
+class _KickDialog extends StatefulWidget {
+  /// The client's nickname for the dialog title.
+  final String nickname;
+  final bool fromServer;
+
+  const _KickDialog({required this.nickname, required this.fromServer});
+
+  @override
+  State<_KickDialog> createState() => _KickDialogState();
+}
+
+class _KickDialogState extends State<_KickDialog> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final al = AppLocalizations.of(context);
+    final title = widget.fromServer
+        ? al.menuKickFromServer
+        : al.menuKickFromChannel;
+
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1A1A2E),
+      title: Text(
+        '$title · ${widget.nickname}',
+        style: const TextStyle(color: Colors.white, fontSize: 18),
+      ),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          hintText: al.kickReasonHint,
+          hintStyle: const TextStyle(color: Colors.grey),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(al.cancel, style: const TextStyle(color: Colors.grey)),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
+          child: Text(
+            al.startKick,
+            style: const TextStyle(color: Colors.redAccent),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Ban dialog: duration presets + optional reason. Pops a (seconds,
+/// reason) record, or null when dismissed.
+class _BanDialog extends StatefulWidget {
+  final String nickname;
+
+  const _BanDialog({required this.nickname});
+
+  @override
+  State<_BanDialog> createState() => _BanDialogState();
+}
+
+class _BanDialogState extends State<_BanDialog> {
+  late final TextEditingController _controller;
+  int _seconds = 0; // default: permanent
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final al = AppLocalizations.of(context);
+    return AlertDialog(
+      backgroundColor: const Color(0xFF1A1A2E),
+      title: Text(
+        '${al.menuBan} · ${widget.nickname}',
+        style: const TextStyle(color: Colors.white, fontSize: 18),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DropdownButtonFormField<int>(
+            initialValue: _seconds,
+            dropdownColor: const Color(0xFF1A1A2E),
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              labelText: al.banDurationLabel,
+              labelStyle: const TextStyle(color: Colors.grey),
+              enabledBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Color(0xFF2A2A4A)),
+              ),
+            ),
+            items: [
+              DropdownMenuItem(value: 0, child: Text(al.banDurationPermanent)),
+              DropdownMenuItem(value: 3600, child: Text(al.banDuration1h)),
+              DropdownMenuItem(value: 86400, child: Text(al.banDuration1d)),
+              DropdownMenuItem(value: 604800, child: Text(al.banDuration1w)),
+            ],
+            onChanged: (v) => setState(() => _seconds = v ?? 0),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: al.banReasonHint,
+              hintStyle: const TextStyle(color: Colors.grey),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(al.cancel, style: const TextStyle(color: Colors.grey)),
+        ),
+        TextButton(
+          onPressed: () =>
+              Navigator.of(context).pop((_seconds, _controller.text.trim())),
+          child: Text(
+            al.startBan,
+            style: const TextStyle(color: Colors.redAccent),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Grant/revoke permissions sheet (channel + server scopes). Owns the
+/// four custom permsid/value controllers, disposed on [State.dispose].
+class _GrantPermDialog extends StatefulWidget {
+  final TsClient client;
+  final TsConnectionNotifier notifier;
+
+  const _GrantPermDialog({required this.client, required this.notifier});
+
+  @override
+  State<_GrantPermDialog> createState() => _GrantPermDialogState();
+}
+
+class _GrantPermDialogState extends State<_GrantPermDialog> {
+  late final TextEditingController _channelPermsid;
+  late final TextEditingController _channelValue;
+  late final TextEditingController _serverPermsid;
+  late final TextEditingController _serverValue;
+  // User-selected grant value per preset permsid (survives rebuilds).
+  final Map<String, int> _grantValues = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _channelPermsid = TextEditingController();
+    _channelValue = TextEditingController(text: '1');
+    _serverPermsid = TextEditingController();
+    _serverValue = TextEditingController(text: '1');
+  }
+
+  @override
+  void dispose() {
+    _channelPermsid.dispose();
+    _channelValue.dispose();
+    _serverPermsid.dispose();
+    _serverValue.dispose();
+    super.dispose();
+  }
+
+  void _report(String? error) {
+    final al = AppLocalizations.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error == null ? al.permOpSucceeded : al.permOpFailed(error),
+        ),
+        backgroundColor: error == null ? null : Colors.red.shade900,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// One preset row: label, permsid + current state, value picker and
+  /// grant/revoke buttons wired to [onGrant]/[onRevoke].
+  Widget _presetRow(
+    _PermPreset p,
+    Future<void> Function(int value) onGrant,
+    Future<void> Function() onRevoke,
+  ) {
+    final al = AppLocalizations.of(context);
+    return ListTile(
+      dense: true,
+      title: Text(
+        p.label,
+        style: const TextStyle(color: Colors.white, fontSize: 14),
+      ),
+      subtitle: Text(
+        '${p.permsid} · ${al.permCurrent(p.currentHint)}',
+        style: const TextStyle(color: Colors.grey, fontSize: 11),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DropdownButton<int>(
+            dropdownColor: const Color(0xFF1A1A2E),
+            value: _grantValues[p.permsid] ?? p.grantValue,
+            items: p.valueChoices
+                .map(
+                  (v) => DropdownMenuItem(
+                    value: v,
+                    child: Text(
+                      '$v',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: (v) {
+              if (v != null) {
+                setState(() => _grantValues[p.permsid] = v);
+              }
+            },
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: al.grantPermission,
+            icon: const Icon(Icons.add_circle_outline, size: 20),
+            color: Colors.greenAccent,
+            onPressed: () => onGrant(_grantValues[p.permsid] ?? p.grantValue),
+          ),
+          IconButton(
+            tooltip: al.revokePermission,
+            icon: const Icon(Icons.remove_circle_outline, size: 20),
+            color: Colors.redAccent,
+            onPressed: onRevoke,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Free-form permsid + value row for one scope.
+  Widget _customRow({
+    required TextEditingController permsidController,
+    required TextEditingController valueController,
+    required Future<void> Function(String permsid, int value) onGrant,
+    required Future<void> Function(String permsid) onRevoke,
+  }) {
+    final al = AppLocalizations.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            al.permCustomSection,
+            style: const TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: permsidController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: al.permCustomPermsid,
+                    hintStyle: const TextStyle(color: Colors.grey),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 64,
+                child: TextField(
+                  controller: valueController,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: al.permCustomValue,
+                    hintStyle: const TextStyle(color: Colors.grey),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: al.grantPermission,
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+                color: Colors.greenAccent,
+                onPressed: () {
+                  final permsid = permsidController.text.trim();
+                  final value = int.tryParse(valueController.text.trim()) ?? 0;
+                  if (permsid.isNotEmpty) onGrant(permsid, value);
+                },
+              ),
+              IconButton(
+                tooltip: al.revokePermission,
+                icon: const Icon(Icons.remove_circle_outline, size: 20),
+                color: Colors.redAccent,
+                onPressed: () {
+                  final permsid = permsidController.text.trim();
+                  if (permsid.isNotEmpty) onRevoke(permsid);
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final al = AppLocalizations.of(context);
+    final c = widget.client;
+    final dbid = c.databaseId;
+    final cid = c.channelId;
+    // Presets are rebuilt every build; their grant values default to the
+    // current client state, while user overrides live in [_grantValues].
+    final presets = <_PermPreset>[
+      _PermPreset(
+        label: al.permPresetTalkPower,
+        permsid: 'i_client_talk_power',
+        grantValue: c.talkPower > 0 ? c.talkPower : 50,
+        valueChoices: const [0, 25, 50, 75, 100],
+        currentHint: '${c.talkPower}',
+      ),
+      _PermPreset(
+        label: al.permPresetPrioritySpeaker,
+        permsid: 'i_client_priority_speaker',
+        grantValue: c.isPrioritySpeaker ? 1 : 0,
+        valueChoices: const [0, 1],
+        currentHint: c.isPrioritySpeaker ? '1' : '0',
+      ),
+      _PermPreset(
+        label: al.permPresetChannelCommander,
+        permsid: 'i_client_is_channel_commander',
+        grantValue: c.isChannelCommander ? 1 : 0,
+        valueChoices: const [0, 1],
+        currentHint: c.isChannelCommander ? '1' : '0',
+      ),
+    ];
+
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.only(
+          bottom: 12 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              margin: const EdgeInsets.only(top: 10, bottom: 6),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.grey.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+              child: Text(
+                '${al.menuGrantRevokePerms} · ${widget.client.nickname}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Divider(height: 1, color: Color(0xFF2A2A4A)),
+            // ── Channel-scoped permissions ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Text(
+                al.permChannelSection,
+                style: const TextStyle(
+                  color: Colors.blueAccent,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            for (final p in presets)
+              _presetRow(
+                p,
+                (value) async {
+                  final e = await widget.notifier.grantChannelPerm(
+                    dbid,
+                    cid,
+                    p.permsid,
+                    value,
+                  );
+                  _report(e);
+                },
+                () async {
+                  final e = await widget.notifier.revokeChannelPerm(
+                    dbid,
+                    cid,
+                    p.permsid,
+                  );
+                  _report(e);
+                },
+              ),
+            _customRow(
+              permsidController: _channelPermsid,
+              valueController: _channelValue,
+              onGrant: (permsid, value) async {
+                final e = await widget.notifier.grantChannelPerm(
+                  dbid,
+                  cid,
+                  permsid,
+                  value,
+                );
+                _report(e);
+              },
+              onRevoke: (permsid) async {
+                final e = await widget.notifier.revokeChannelPerm(
+                  dbid,
+                  cid,
+                  permsid,
+                );
+                _report(e);
+              },
+            ),
+            const Divider(height: 1, color: Color(0xFF2A2A4A)),
+            // ── Server-wide permissions ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Text(
+                al.permServerSection,
+                style: const TextStyle(
+                  color: Colors.blueAccent,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            for (final p in presets)
+              _presetRow(
+                p,
+                (value) async {
+                  final e = await widget.notifier.grantServerPerm(
+                    dbid,
+                    p.permsid,
+                    value,
+                  );
+                  _report(e);
+                },
+                () async {
+                  final e = await widget.notifier.revokeServerPerm(
+                    dbid,
+                    p.permsid,
+                  );
+                  _report(e);
+                },
+              ),
+            _customRow(
+              permsidController: _serverPermsid,
+              valueController: _serverValue,
+              onGrant: (permsid, value) async {
+                final e = await widget.notifier.grantServerPerm(
+                  dbid,
+                  permsid,
+                  value,
+                );
+                _report(e);
+              },
+              onRevoke: (permsid) async {
+                final e = await widget.notifier.revokeServerPerm(dbid, permsid);
+                _report(e);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

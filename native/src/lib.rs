@@ -19,10 +19,65 @@ pub static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
 #[derive(Debug)]
 pub enum Command {
     SendMessage { target_mode: u8, target_cid: u64, message: String },
-    MoveChannel { client_id: u16, channel_id: u64, password: Option<String> },
+    /// Move a client (or ourselves) to another channel. `token: Some(..)`
+    /// turns the request into a return-code-tracked operation whose server
+    /// answer resolves the caller's `PermOp` future (used when moving OTHER
+    /// clients from the permission sheet); `None` keeps the fire-and-forget
+    /// behavior used when we move ourselves (channel-password flow).
+    MoveChannel {
+        client_id: u16,
+        channel_id: u64,
+        password: Option<String>,
+        token: Option<String>,
+    },
     SetMuted { input: bool, output: bool },
     SetAway { away: bool },
     SendPoke { client_id: u16, message: String },
+    /// Kick a client from the current channel (from_server=false) or from
+    /// the whole server (from_server=true). An empty reason is treated as a
+    /// no-op by the event loop (protects against accidental kick attempts).
+    /// A `token` (Some) upgrades the request to a return-code-tracked
+    /// operation whose server answer resolves the caller's `PermOp` future.
+    KickClient {
+        client_id: u16,
+        from_server: bool,
+        reason: String,
+        token: Option<String>,
+    },
+    /// Ban a client. `time_seconds == 0` means a permanent ban. A `token`
+    /// (Some) upgrades the request to a tracked operation (see KickClient).
+    BanClient {
+        client_id: u16,
+        time_seconds: u32,
+        reason: String,
+        token: Option<String>,
+    },
+    /// Add a client to a server group. `dbid` is the client's database id.
+    /// `token` correlates the server's answer with the Dart caller.
+    ServerGroupAddClient { sgid: u64, dbid: u64, token: String },
+    /// Remove a client from a server group.
+    ServerGroupDelClient { sgid: u64, dbid: u64, token: String },
+    /// Set a client's channel group in a specific channel.
+    /// Sent as a raw `channelgroupaddclient` command (the upstream
+    /// tsdeclarations do not declare this message — see Command::ChannelGroupClear).
+    ChannelGroupSet { cgid: u64, cid: u64, dbid: u64, token: String },
+    /// Clear a client's channel group in a specific channel (raw
+    /// `channelgroupdelclient`, also undeclared upstream).
+    ChannelGroupClear { cid: u64, dbid: u64, token: String },
+    /// Grant a channel-scoped permission to a client (`channelclientaddperm`).
+    GrantChannelPerm { cid: u64, dbid: u64, permsid: String, value: i32, token: String },
+    /// Revoke a channel-scoped permission from a client (`channelclientdelperm`).
+    RevokeChannelPerm { cid: u64, dbid: u64, permsid: String, token: String },
+    /// Grant a server-wide permission to a client (`clientaddperm`).
+    GrantServerPerm { dbid: u64, permsid: String, value: i32, token: String },
+    /// Revoke a server-wide permission from a client (`clientdelperm`).
+    RevokeServerPerm { dbid: u64, permsid: String, token: String },
+    /// Re-request `servergrouplist`/`channelgrouplist` (used by the group
+    /// dialogs' retry when the lists never arrived).
+    RefreshGroups,
+    /// Request OUR OWN directly-assigned permission list (`clientpermlist`
+    /// for our own database id). The answer fills `STATE.own_perms`.
+    OwnPermList,
     Disconnect,
     SendAudio { data: Vec<f32> },
     // File transfer commands (see FtTask / FT_TASKS below). `cid` is the
@@ -188,6 +243,11 @@ pub enum TsEvent {
     FtProgress { task_id: u32, transferred: u64 },
     #[serde(rename = "ft_done")]
     FtDone { task_id: u32, ok: bool, transferred: u64, error: Option<String> },
+    /// Result of a permission-management command (server group add/remove,
+    /// channel group set/clear, channel perm grant/revoke). Correlates back
+    /// to the caller via `token`; `error` carries the server's rejection text.
+    #[serde(rename = "perm_op")]
+    PermOp { token: String, ok: bool, error: Option<String> },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -199,7 +259,63 @@ pub struct TsChannel {
     pub has_password: bool,
     pub client_count: u32,
     pub order: u32,
+    /// The server's default channel. A channel kick moves its target here,
+    /// so a client already sitting in the default channel can never be
+    /// kicked from their channel — the UI hides that action for them.
+    pub is_default: bool,
+    /// Raw `ChannelPermissionHint` bits (see tsclientlib::ChannelPermissionHint):
+    /// JOIN=1, MODIFY=2, FORCE_DELETE=4, DELETE=8, SUBSCRIBE=16,
+    /// VIEW_DESCRIPTION=32, FILE_UPLOAD=64, FILE_DOWNLOAD=128, FILE_DELETE=256,
+    /// FILE_RENAME=512, FILE_BROWSE=1024, FILE_DIRECTORY_CREATE=2048,
+    /// MODIFY_PERMISSIONS=4096. 0 while the server has not sent hints yet.
+    pub permission_hints: u64,
+    /// i_channel_needed_talk_power (0 when the channel does not restrict talk).
+    pub needed_talk_power: i32,
 }
+
+/// A server group (from the book's `server_groups` map, which is populated
+/// by `servergrouplist` — requested by us on connect).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TsServerGroup {
+    pub id: u64,
+    pub name: String,
+    pub is_permanent: bool,
+    pub needed_member_add_power: i32,
+    pub needed_member_remove_power: Option<i32>,
+    /// Higher = more privileged group (used by the UI to pick the client's
+    /// primary server-group identity). 0 for the default/sorted-lowest groups.
+    pub sort_id: i32,
+}
+
+/// A channel group (from the book's `channel_groups` map).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TsChannelGroup {
+    pub id: u64,
+    pub name: String,
+    pub is_permanent: bool,
+    pub needed_member_add_power: i32,
+    pub needed_member_remove_power: Option<i32>,
+    /// Group sort priority (server-defined; higher = more privileged).
+    pub sort_id: i32,
+}
+
+/// One permission entry of OUR OWN client (from a `clientpermlist` request).
+/// Only directly-assigned permissions are returned — inherited/group values
+/// are NOT included, so this is a low-threshold hint, not an authorization
+/// source for individual actions.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TsPerm {
+    pub name: String,
+    pub value: i32,
+    pub negated: bool,
+    pub skip: bool,
+}
+
+/// Maps the return_code of a permission-management command to the token the
+/// Dart caller supplied, so the `MessageResult` handler can resolve it into a
+/// `PermOp` event (same pattern as `FT_OPS`).
+pub static PERM_OPS: Lazy<Mutex<HashMap<u16, String>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TsClient {
@@ -212,6 +328,29 @@ pub struct TsClient {
     pub is_talking: bool,
     pub volume: f32,
     pub uid: Option<String>,
+    /// The client's database id (cldbid) used by group/permission commands.
+    /// 0 while the server has not announced it yet.
+    pub database_id: u64,
+    /// 0 = normal client, 1 = server query, 2 = server query with admin.
+    pub client_type: u8,
+    pub is_channel_commander: bool,
+    pub is_recording: bool,
+    pub is_priority_speaker: bool,
+    /// False while the client's talk power is below the channel's
+    /// needed-talk-power (the client cannot speak there).
+    pub talk_power_granted: bool,
+    /// i_client_talk_power of this client.
+    pub talk_power: i32,
+    /// Raw `ClientPermissionHint` bits (see tsclientlib::ClientPermissionHint):
+    /// KICK_SERVER=1, KICK_CHANNEL=2, BAN=4, MOVE_CLIENT=8, PRIVATE_MESSAGE=16,
+    /// POKE=32, WHISPER=64, COMPLAIN=128, MODIFY_PERMISSIONS=256.
+    /// This is what WE may do to THIS client. 0 while no hints arrived yet.
+    pub permission_hints: u64,
+    pub server_groups: Vec<u64>,
+    /// Names of the client's server groups, resolved from the book (used for
+    /// tooltips; may be empty when the group data is unavailable).
+    pub server_group_names: Vec<String>,
+    pub channel_group: u32,
 }
 
 // ─── Per-client lock-free jitter buffer ──────────────────────────────
@@ -268,6 +407,15 @@ pub struct TsConnection {
     pub own_client_id: u32,
     pub channels: Vec<TsChannel>,
     pub clients: Vec<TsClient>,
+    /// All server groups on this server (from `servergrouplist`). Populated
+    /// by `refresh_from_book`; empty until the request was answered.
+    pub server_groups: Vec<TsServerGroup>,
+    /// All channel groups on this server (from `channelgrouplist`).
+    pub channel_groups: Vec<TsChannelGroup>,
+    /// OUR OWN directly-assigned permissions (from `clientpermlist`).
+    /// Inherited/group values are not listed; used only as a low-threshold
+    /// hint for UI affordances (e.g. showing the permission-management entry).
+    pub own_perms: Vec<TsPerm>,
     pub pending_events: VecDeque<TsEvent>,
     // Audio send state
     pub pcm_in: Vec<f32>,
@@ -303,6 +451,9 @@ impl TsConnection {
             own_client_id: 0,
             channels: Vec::new(),
             clients: Vec::new(),
+            server_groups: Vec::new(),
+            channel_groups: Vec::new(),
+            own_perms: Vec::new(),
             pending_events: VecDeque::new(),
             pcm_in: Vec::new(),
             audio_encoder: None,

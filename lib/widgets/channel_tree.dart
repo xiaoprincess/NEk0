@@ -20,6 +20,10 @@ class ChannelTree extends StatefulWidget {
   /// e.g. while disconnected.
   final bool Function(int channelId)? sessionPasswordKnown;
 
+  /// Our own talk power, used to decide whether a channel's
+  /// needed-talk-power bars us from speaking there.
+  final int ownTalkPower;
+
   const ChannelTree({
     super.key,
     required this.channels,
@@ -27,6 +31,7 @@ class ChannelTree extends StatefulWidget {
     required this.onChannelTap,
     this.onChannelMenu,
     this.sessionPasswordKnown,
+    this.ownTalkPower = 0,
   });
 
   @override
@@ -58,10 +63,16 @@ class _ChannelTreeState extends State<ChannelTree> {
   }
 
   Widget _buildTile(TsChannel channel, int depth) {
+    final al = AppLocalizations.of(context);
     final children = channel.children(widget.channels);
     final isSelected = channel.id == widget.selectedChannelId;
     final hasChildren = children.isNotEmpty;
     final isExpanded = _expanded.contains(channel.id);
+    // Permission hints arrive shortly after connect (the server pushes them
+    // on subscribe). Until then `permissionHints == 0` means "unknown", not
+    // "denied" — only gate once the server explicitly denies joining.
+    final hintsKnown = channel.permissionHints != 0;
+    final mayJoin = !hintsKnown || channel.canJoin || isSelected;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -73,6 +84,20 @@ class _ChannelTreeState extends State<ChannelTree> {
               : Colors.transparent,
           child: InkWell(
             onTap: () {
+              // Permission gate: a channel we cannot join shows a hint
+              // instead of attempting the move (skip when we are already in
+              // it — the hints may lag behind the optimistic selection).
+              if (!mayJoin) {
+                ScaffoldMessenger.of(context)
+                  ..hideCurrentSnackBar()
+                  ..showSnackBar(
+                    SnackBar(
+                      content: Text(al.channelsNoJoinPermission),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                return;
+              }
               widget.onChannelTap(channel);
               // Auto-expand parent when selecting a channel
               if (hasChildren && !_expanded.contains(channel.id)) {
@@ -153,8 +178,33 @@ class _ChannelTreeState extends State<ChannelTree> {
                       ],
                     ),
                   ),
+                  // Permission indicators: cannot join at all (only shown once the
+                  // server has actually denied it), or our talk power is too
+                  // low to speak in the channel.
+                  if (hintsKnown && !channel.canJoin && !isSelected) ...[
+                    const SizedBox(width: 6),
+                    Tooltip(
+                      message: al.channelsNoJoinPermission,
+                      child: Icon(
+                        Icons.block,
+                        size: 13,
+                        color: Colors.redAccent,
+                      ),
+                    ),
+                  ],
+                  if (channel.neededTalkPower > widget.ownTalkPower &&
+                      !isSelected) ...[
+                    const SizedBox(width: 6),
+                    Tooltip(
+                      message: al.channelTalkPowerNeeded(
+                        channel.neededTalkPower,
+                      ),
+                      child: Icon(Icons.mic_off, size: 12, color: Colors.amber),
+                    ),
+                  ],
                   // Client count badge
-                  if (channel.clientCount > 0)
+                  if (channel.clientCount > 0) ...[
+                    const SizedBox(width: 6),
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 6,
@@ -172,6 +222,7 @@ class _ChannelTreeState extends State<ChannelTree> {
                         ),
                       ),
                     ),
+                  ],
                 ],
               ),
             ),

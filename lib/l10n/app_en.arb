@@ -244,5 +244,78 @@
     "placeholders": {
       "reason": { "type": "String" }
     }
-  }
+  },
+
+  "channelsNoJoinPermission": "You do not have permission to join this channel",
+  "channelTalkPowerNeeded": "Talk power required: {power}",
+  "@channelTalkPowerNeeded": {
+    "placeholders": {
+      "power": { "type": "int" }
+    }
+  },
+  "serverQuery": "Server query client",
+  "serverQueryAdmin": "Server query with admin rights",
+  "channelCommander": "Channel commander",
+  "prioritySpeaker": "Priority speaker",
+  "recording": "Recording",
+  "talkPowerDenied": "No talk power in this channel",
+  "serverGroups": "Groups: {groups}",
+  "@serverGroups": {
+    "placeholders": {
+      "groups": { "type": "String" }
+    }
+  },
+
+  "menuMoveToChannel": "Move to channel",
+  "menuKickFromChannel": "Kick from channel",
+  "menuKickFromServer": "Kick from server",
+  "menuBan": "Ban",
+  "kickReasonHint": "Reason (optional)",
+  "banReasonHint": "Reason (optional — empty cancels)",
+  "banDurationLabel": "Ban duration",
+  "banDurationPermanent": "Permanent",
+  "banDuration1h": "1 hour",
+  "banDuration1d": "1 day",
+  "banDuration1w": "1 week",
+  "startKick": "Kick",
+  "startBan": "Ban",
+  "banCanceled": "Ban canceled — no reason given",
+  "moveSucceeded": "Move sent",
+  "kickSent": "Kick sent",
+  "banSent": "Ban sent",
+
+  "menuServerGroups": "Grant permissions (server groups)",
+  "menuChannelGroups": "Channel group",
+  "menuGrantRevokePerms": "Grant / revoke permissions",
+  "grantPermission": "Grant permission",
+  "revokePermission": "Revoke permission",
+  "permCurrent": "Current: {current}",
+  "@permCurrent": {
+    "placeholders": {
+      "current": { "type": "String" }
+    }
+  },
+  "permPresetTalkPower": "Talk power",
+  "permPresetPrioritySpeaker": "Priority speaker",
+  "permPresetChannelCommander": "Channel commander",
+  "permChannelSection": "Channel permissions",
+  "permServerSection": "Server-wide permissions",
+  "permCustomSection": "Custom permission",
+  "permCustomPermsid": "perm id (e.g. i_client_whisper_power)",
+  "permCustomValue": "value",
+  "channelGroupNone": "No channel group",
+  "groupsNotLoaded": "Group list not loaded yet",
+  "retry": "Retry",
+  "dbIdUnavailable": "Cannot get this user's database ID yet",
+  "permOpSucceeded": "Permission change sent",
+  "permOpFailed": "Permission change failed: {error}",
+  "@permOpFailed": {
+    "placeholders": {
+      "error": { "type": "String" }
+    }
+  },
+  "permNotConnected": "Not connected",
+  "permQueueFailed": "Failed to queue the request",
+  "permTimeout": "The server did not answer in time",
+  "permFailedUnknown": "The server rejected the request"
 }

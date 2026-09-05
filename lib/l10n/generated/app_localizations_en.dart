@@ -602,4 +602,163 @@ class AppLocalizationsEn extends AppLocalizations {
   String fmReasonPrefix(String reason) {
     return 'Operation failed: $reason';
   }
+
+  @override
+  String get channelsNoJoinPermission =>
+      'You do not have permission to join this channel';
+
+  @override
+  String channelTalkPowerNeeded(int power) {
+    return 'Talk power required: $power';
+  }
+
+  @override
+  String get serverQuery => 'Server query client';
+
+  @override
+  String get serverQueryAdmin => 'Server query with admin rights';
+
+  @override
+  String get channelCommander => 'Channel commander';
+
+  @override
+  String get prioritySpeaker => 'Priority speaker';
+
+  @override
+  String get recording => 'Recording';
+
+  @override
+  String get talkPowerDenied => 'No talk power in this channel';
+
+  @override
+  String serverGroups(String groups) {
+    return 'Groups: $groups';
+  }
+
+  @override
+  String get menuMoveToChannel => 'Move to channel';
+
+  @override
+  String get menuKickFromChannel => 'Kick from channel';
+
+  @override
+  String get menuKickFromServer => 'Kick from server';
+
+  @override
+  String get menuBan => 'Ban';
+
+  @override
+  String get kickReasonHint => 'Reason (optional)';
+
+  @override
+  String get banReasonHint => 'Reason (optional — empty cancels)';
+
+  @override
+  String get banDurationLabel => 'Ban duration';
+
+  @override
+  String get banDurationPermanent => 'Permanent';
+
+  @override
+  String get banDuration1h => '1 hour';
+
+  @override
+  String get banDuration1d => '1 day';
+
+  @override
+  String get banDuration1w => '1 week';
+
+  @override
+  String get startKick => 'Kick';
+
+  @override
+  String get startBan => 'Ban';
+
+  @override
+  String get banCanceled => 'Ban canceled — no reason given';
+
+  @override
+  String get moveSucceeded => 'Move sent';
+
+  @override
+  String get kickSent => 'Kick sent';
+
+  @override
+  String get banSent => 'Ban sent';
+
+  @override
+  String get menuServerGroups => 'Grant permissions (server groups)';
+
+  @override
+  String get menuChannelGroups => 'Channel group';
+
+  @override
+  String get menuGrantRevokePerms => 'Grant / revoke permissions';
+
+  @override
+  String get grantPermission => 'Grant permission';
+
+  @override
+  String get revokePermission => 'Revoke permission';
+
+  @override
+  String permCurrent(String current) {
+    return 'Current: $current';
+  }
+
+  @override
+  String get permPresetTalkPower => 'Talk power';
+
+  @override
+  String get permPresetPrioritySpeaker => 'Priority speaker';
+
+  @override
+  String get permPresetChannelCommander => 'Channel commander';
+
+  @override
+  String get permChannelSection => 'Channel permissions';
+
+  @override
+  String get permServerSection => 'Server-wide permissions';
+
+  @override
+  String get permCustomSection => 'Custom permission';
+
+  @override
+  String get permCustomPermsid => 'perm id (e.g. i_client_whisper_power)';
+
+  @override
+  String get permCustomValue => 'value';
+
+  @override
+  String get channelGroupNone => 'No channel group';
+
+  @override
+  String get groupsNotLoaded => 'Group list not loaded yet';
+
+  @override
+  String get retry => 'Retry';
+
+  @override
+  String get dbIdUnavailable => 'Cannot get this user\'s database ID yet';
+
+  @override
+  String get permOpSucceeded => 'Permission change sent';
+
+  @override
+  String permOpFailed(String error) {
+    return 'Permission change failed: $error';
+  }
+
+  @override
+  String get permNotConnected => 'Not connected';
+
+  @override
+  String get permQueueFailed => 'Failed to queue the request';
+
+  @override
+  String get permTimeout => 'The server did not answer in time';
+
+  @override
+  String get permFailedUnknown => 'The server rejected the request';
 }
