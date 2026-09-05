@@ -14,7 +14,6 @@ import '../services/foreground_service.dart';
 import '../services/ts_ffi.dart';
 import '../widgets/channel_password_dialog.dart';
 import '../widgets/channel_tree.dart';
-import '../widgets/client_list.dart';
 import '../widgets/chat_panel.dart';
 import '../widgets/connection_bar.dart';
 import '../screens/file_manager_screen.dart';
@@ -42,7 +41,8 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
   final GlobalKey _micKey = GlobalKey();
   final GlobalKey _speakerKey = GlobalKey();
   final GlobalKey _chatKey = GlobalKey();
-  final GlobalKey _usersKey = GlobalKey();
+  final GlobalKey _treeKey = GlobalKey();
+  final GlobalKey _treeBodyKey = GlobalKey();
 
   /// Loads (and caches) the server group list for the privilege badges.
   /// Cheap guard: only FFI when the server changed or the list is still
@@ -64,8 +64,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
   }
 
   /// Show the control-bar guide the first time the server screen is opened.
-  /// Deferred to the first successful connect (see [_onConnected]) so the
-  /// user-list step has a real target instead of the connecting spinner.
+  /// Deferred to the first successful connect (see [_onConnected]).
   Future<void> _maybeAutoShowGuide() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.getBool('tour_server_shown') ?? false) return;
@@ -75,8 +74,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
   }
 
   /// Runs right after the first successful connect: shows the OEM
-  /// battery/auto-start guide first, then the spotlight tour (which now
-  /// includes the user-list step, only meaningful once the roster exists).
+  /// battery/auto-start guide first, then the spotlight tour.
   Future<void> _onConnected() async {
     await _maybeShowOemGuide();
     if (!mounted) return;
@@ -85,6 +83,8 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
 
   Future<void> _showGuide() async {
     final al = AppLocalizations.of(context);
+    // The channel-tree step needs the left panel mounted, which only exists
+    // while connected (a missing target would stall the tour with no bubble).
     final connected = ref.read(tsConnectionProvider).connected;
     await showSpotlightTour(context, [
       TourStep(
@@ -105,15 +105,28 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
         title: al.guideChatTitle,
         description: al.guideChatDesc,
       ),
-      // The user-list step needs the roster rendered, which only exists
-      // while connected.
-      if (connected)
+      // The bubble caps its description at 4 lines, so the merged tree is
+      // explained in three short steps instead of one long paragraph.
+      if (connected) ...[
         TourStep(
-          targetKey: _usersKey,
+          targetKey: _treeKey,
           padding: 4,
-          title: al.guideUsersTitle,
-          description: al.guideUsersDesc,
+          title: al.guideChannelsTitle,
+          description: al.guideChannelsDesc,
         ),
+        TourStep(
+          targetKey: _treeBodyKey,
+          padding: 4,
+          title: al.guideMembersTitle,
+          description: al.guideMembersDesc,
+        ),
+        TourStep(
+          targetKey: _treeBodyKey,
+          padding: 4,
+          title: al.guideMemberActionsTitle,
+          description: al.guideMemberActionsDesc,
+        ),
+      ],
     ]);
   }
 
@@ -246,6 +259,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
       child: Column(
         children: [
           Container(
+            key: _treeKey,
             padding: const EdgeInsets.all(8),
             color: const Color(0xFF16213E),
             width: double.infinity,
@@ -259,16 +273,19 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
             ),
           ),
           Expanded(
-            flex: 3,
             // Material between the colored container and the tiles: ListTile
             // paints background and ink on the nearest Material — with only
             // the ColoredBox ancestor above, Flutter throws "ListTile
             // background color or ink splashes may be invisible" on every
             // rebuild.
             child: Material(
+              key: _treeBodyKey,
               type: MaterialType.transparency,
               child: ChannelTree(
                 channels: conn.channels,
+                // Every client on the server is nested under its channel, so
+                // members of other channels are directly tappable.
+                clients: conn.clients,
                 selectedChannelId: conn.selectedChannelId,
                 // Our own talk power decides whether a channel's
                 // needed-talk-power bars us from speaking there.
@@ -289,61 +306,22 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
                         .read(tsConnectionProvider.notifier)
                         .channelPassword(channelId) !=
                     null,
+                // Server groups for the privileged-identity badges; empty
+                // while the group list is unavailable.
+                serverGroups: _serverGroups,
+                // Tapping yourself opens the same voice settings as
+                // long-pressing the mic; tapping others opens their
+                // per-client volume + poke sheet.
+                onClientTap: (clientId) {
+                  if (clientId == conn.ownClientId) {
+                    _showVoiceSettings(conn, notifier);
+                  } else {
+                    _showClientVolume(clientId);
+                  }
+                },
               ),
             ),
           ),
-          const Divider(height: 1, color: Color(0xFF2A2A4A)),
-          Container(
-            key: _usersKey,
-            padding: const EdgeInsets.all(8),
-            color: const Color(0xFF16213E),
-            width: double.infinity,
-            child: Text(
-              AppLocalizations.of(context).users,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          if (conn.selectedChannelId == null)
-            Expanded(flex: 2, child: SizedBox.shrink()),
-          if (conn.selectedChannelId != null)
-            Expanded(
-              flex: 2,
-              // Same Material reason as the channel tree above: the client
-              // ListTiles sit under a colored container.
-              child: Material(
-                type: MaterialType.transparency,
-                child: ClientList(
-                  clients: conn.clients,
-                  currentChannelId: conn.selectedChannelId!,
-                  // Talk-power icons only appear in channels that restrict
-                  // talking (needed_talk_power > 0); otherwise the server's
-                  // `client_is_talker` flag would misreport every user.
-                  channelNeededTalkPower:
-                      conn.channels
-                          .where((c) => c.id == conn.selectedChannelId)
-                          .firstOrNull
-                          ?.neededTalkPower ??
-                      0,
-                  // Server groups for privileged-identity badges; empty
-                  // while the group list is unavailable.
-                  serverGroups: _serverGroups,
-                  // Tapping yourself opens the same voice settings as
-                  // long-pressing the mic; tapping others opens their
-                  // per-client volume + poke sheet.
-                  onClientTap: (clientId) {
-                    if (clientId == conn.ownClientId) {
-                      _showVoiceSettings(conn, notifier);
-                    } else {
-                      _showClientVolume(clientId);
-                    }
-                  },
-                ),
-              ),
-            ),
         ],
       ),
     );

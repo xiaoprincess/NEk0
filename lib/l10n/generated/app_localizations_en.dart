@@ -69,9 +69,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get channels => 'Channels';
 
   @override
-  String get users => 'Users';
-
-  @override
   String get chat => 'Chat';
 
   @override
@@ -95,11 +92,25 @@ class AppLocalizationsEn extends AppLocalizations {
       'Tap the chat bar to send messages in your channel.';
 
   @override
-  String get guideUsersTitle => 'User list';
+  String get guideChannelsTitle => 'Channels';
 
   @override
-  String get guideUsersDesc =>
-      'Tap another user to adjust their volume or poke them. Tap your own name to open the same voice settings as long-pressing the mic.';
+  String get guideChannelsDesc =>
+      'Tap a channel to join it; long-press for its menu (join, file manager).';
+
+  @override
+  String get guideMembersTitle => 'Members';
+
+  @override
+  String get guideMembersDesc =>
+      'Every member is listed under their channel — including members of other channels.';
+
+  @override
+  String get guideMemberActionsTitle => 'Member actions';
+
+  @override
+  String get guideMemberActionsDesc =>
+      'Tap someone to adjust volume, poke or kick; tap your own name for voice settings.';
 
   @override
   String get keepAliveTitle => 'Background Keep-Alive';
@@ -378,9 +389,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get disconnect => 'Disconnect';
-
-  @override
-  String get noUsersInChannel => 'No users in this channel';
 
   @override
   String get noMessagesYet => 'No messages yet';

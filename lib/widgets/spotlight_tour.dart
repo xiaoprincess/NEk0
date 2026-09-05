@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../l10n/generated/app_localizations.dart';
@@ -235,11 +237,17 @@ class _SpotlightTourState extends State<_SpotlightTour>
         ],
       ),
     );
+    // The bubble is intrinsically sized (~title + 4 description lines +
+    // buttons + caret ≈ 220). Clamp its edge facing the screen end so tall
+    // cutouts (e.g. the channel tree) cannot push it off-screen — when
+    // clamped it floats over the lower/upper part of the hole instead.
+    // 48 reserves room for the dots row at the bottom.
+    final maxOffset = size.height - 220.0 - 48.0;
     return Positioned(
       left: left,
       width: bubbleWidth,
-      top: above ? null : cutout.bottom + 12,
-      bottom: above ? size.height - cutout.top + 12 : null,
+      top: above ? null : math.min(cutout.bottom + 12, maxOffset),
+      bottom: above ? math.min(size.height - cutout.top + 12, maxOffset) : null,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         // Caret sits on the edge facing the hole.

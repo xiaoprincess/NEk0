@@ -2,9 +2,16 @@ import 'package:flutter/material.dart';
 
 import '../l10n/generated/app_localizations.dart';
 import '../models/channel.dart';
+import '../models/client.dart';
+import '../models/group.dart';
+import 'client_row.dart';
 
 class ChannelTree extends StatefulWidget {
   final List<TsChannel> channels;
+
+  /// Every client on the server; those whose [TsClient.channelId] matches a
+  /// channel are rendered nested under that channel's row (TS3 style).
+  final List<TsClient> clients;
   final int? selectedChannelId;
   // Receives the whole channel (not just the id) so the caller can decide
   // e.g. to prompt for a password before joining.
@@ -24,14 +31,24 @@ class ChannelTree extends StatefulWidget {
   /// needed-talk-power bars us from speaking there.
   final int ownTalkPower;
 
+  /// Invoked when a client row is tapped — the caller dispatches self
+  /// (voice settings) vs. others (per-client action sheet).
+  final ValueChanged<int>? onClientTap;
+
+  /// Server groups for the privileged-identity badges on client rows.
+  final List<TsServerGroup> serverGroups;
+
   const ChannelTree({
     super.key,
     required this.channels,
+    this.clients = const [],
     this.selectedChannelId,
     required this.onChannelTap,
     this.onChannelMenu,
     this.sessionPasswordKnown,
     this.ownTalkPower = 0,
+    this.onClientTap,
+    this.serverGroups = const [],
   });
 
   @override
@@ -39,11 +56,26 @@ class ChannelTree extends StatefulWidget {
 }
 
 class _ChannelTreeState extends State<ChannelTree> {
+  /// Manual expansion of channels WITHOUT clients (they default to
+  /// collapsed).
   final Set<int> _expanded = {};
+
+  /// Manual collapse of channels WITH clients (they default to expanded, so
+  /// members of other channels are reachable without extra taps).
+  final Set<int> _collapsed = {};
 
   List<TsChannel> get _roots =>
       widget.channels.where((c) => c.parentId == 0).toList()
         ..sort((a, b) => a.order.compareTo(b.order));
+
+  /// Clients grouped by their channel id, in roster order.
+  Map<int, List<TsClient>> get _clientsByChannel {
+    final map = <int, List<TsClient>>{};
+    for (final c in widget.clients) {
+      map.putIfAbsent(c.channelId, () => []).add(c);
+    }
+    return map;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -65,9 +97,15 @@ class _ChannelTreeState extends State<ChannelTree> {
   Widget _buildTile(TsChannel channel, int depth) {
     final al = AppLocalizations.of(context);
     final children = channel.children(widget.channels);
+    final clientsInChannel = _clientsByChannel[channel.id] ?? const [];
     final isSelected = channel.id == widget.selectedChannelId;
     final hasChildren = children.isNotEmpty;
-    final isExpanded = _expanded.contains(channel.id);
+    final hasClients = clientsInChannel.isNotEmpty;
+    // A channel can be folded when it has sub-channels or members.
+    final canCollapse = hasChildren || hasClients;
+    final isExpanded = hasClients
+        ? !_collapsed.contains(channel.id)
+        : _expanded.contains(channel.id);
     // Permission hints arrive shortly after connect (the server pushes them
     // on subscribe). Until then `permissionHints == 0` means "unknown", not
     // "denied" — only gate once the server explicitly denies joining.
@@ -99,9 +137,13 @@ class _ChannelTreeState extends State<ChannelTree> {
                 return;
               }
               widget.onChannelTap(channel);
-              // Auto-expand parent when selecting a channel
-              if (hasChildren && !_expanded.contains(channel.id)) {
-                setState(() => _expanded.add(channel.id));
+              // Auto-expand the channel when joining it (also clears a
+              // manual collapse so the member we "joined to meet" shows).
+              if (canCollapse && !isExpanded) {
+                setState(() {
+                  _expanded.add(channel.id);
+                  _collapsed.remove(channel.id);
+                });
               }
             },
             onLongPress: widget.onChannelMenu == null
@@ -116,15 +158,25 @@ class _ChannelTreeState extends State<ChannelTree> {
               ),
               child: Row(
                 children: [
-                  // Expand/collapse arrow for channels with children
-                  if (hasChildren)
+                  // Expand/collapse arrow for foldable channels
+                  if (canCollapse)
                     GestureDetector(
                       onTap: () {
                         setState(() {
-                          if (_expanded.contains(channel.id)) {
-                            _expanded.remove(channel.id);
+                          if (isExpanded) {
+                            // Remember the collapse against whichever
+                            // default currently applies to the channel.
+                            if (hasClients) {
+                              _collapsed.add(channel.id);
+                            } else {
+                              _expanded.remove(channel.id);
+                            }
                           } else {
-                            _expanded.add(channel.id);
+                            if (hasClients) {
+                              _collapsed.remove(channel.id);
+                            } else {
+                              _expanded.add(channel.id);
+                            }
                           }
                         });
                       },
@@ -202,8 +254,10 @@ class _ChannelTreeState extends State<ChannelTree> {
                       child: Icon(Icons.mic_off, size: 12, color: Colors.amber),
                     ),
                   ],
-                  // Client count badge
-                  if (channel.clientCount > 0) ...[
+                  // Client count badge — redundant while the members are
+                  // visible, so only shown on a folded channel.
+                  if (channel.clientCount > 0 &&
+                      !(isExpanded && hasClients)) ...[
                     const SizedBox(width: 6),
                     Container(
                       padding: const EdgeInsets.symmetric(
@@ -228,9 +282,23 @@ class _ChannelTreeState extends State<ChannelTree> {
             ),
           ),
         ),
-        // Children (only if expanded)
-        if (hasChildren && isExpanded)
+        // Members nested under their channel (TS3 order: clients above
+        // sub-channels), then the sub-channels — only while expanded.
+        if (isExpanded) ...[
+          for (final client in clientsInChannel)
+            ClientRow(
+              client: client,
+              // Talk power is per channel: use THIS channel's restriction.
+              channelNeededTalkPower: channel.neededTalkPower,
+              serverGroups: widget.serverGroups,
+              // Align roughly with the channel icon of this depth.
+              indent: 30.0 + depth * 20.0,
+              onTap: widget.onClientTap == null
+                  ? null
+                  : () => widget.onClientTap!(client.id),
+            ),
           ...children.map((ch) => _buildTile(ch, depth + 1)),
+        ],
       ],
     );
   }

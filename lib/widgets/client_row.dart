@@ -5,83 +5,68 @@ import '../models/client.dart';
 import '../models/group.dart';
 import '../models/privilege.dart';
 
-class ClientList extends StatelessWidget {
-  final List<TsClient> clients;
-  final int currentChannelId;
-  final ValueChanged<int>? onClientTap;
+/// A single client row: status icon (+ talking dot), nickname and the
+/// identity/status badges. Rendered nested under its channel inside the
+/// channel tree, so [channelNeededTalkPower] must be the row's OWN channel's
+/// `needed_talk_power` — talk power is per channel, not global.
+class ClientRow extends StatelessWidget {
+  final TsClient client;
 
-  /// The currently selected channel's `needed_talk_power`. 0 (or null) =
-  /// the channel does not restrict talking, so no talk-power icon is shown.
+  /// The client's channel restricts talking when > 0; only then is a
+  /// denied-talk-power icon shown.
   final int channelNeededTalkPower;
 
   /// All server groups on this server (used to resolve a client's primary
-  /// server-group identity by sort_id). Empty while the group list is
+  /// server-group identity by name tier). Empty while the group list is
   /// unavailable — privileged badges then stay hidden.
   final List<TsServerGroup> serverGroups;
 
-  const ClientList({
+  /// Left content padding (ListTile's default is 16). The channel tree
+  /// passes an indent matching the channel depth.
+  final double indent;
+
+  final VoidCallback? onTap;
+
+  const ClientRow({
     super.key,
-    required this.clients,
-    required this.currentChannelId,
-    this.onClientTap,
+    required this.client,
     this.channelNeededTalkPower = 0,
     this.serverGroups = const [],
+    this.indent = 16,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final al = AppLocalizations.of(context);
-    final channelClients = clients
-        .where((c) => c.channelId == currentChannelId)
-        .toList();
-
-    if (channelClients.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.all(16),
-        child: Text(
-          al.noUsersInChannel,
-          style: const TextStyle(color: Colors.grey),
+    return ListTile(
+      dense: true,
+      contentPadding: EdgeInsets.only(left: indent, right: 16),
+      leading: SizedBox(
+        width: 22,
+        height: 22,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Icon(_clientIcon(client), size: 18, color: _clientColor(client)),
+            if (client.isTalking)
+              const Positioned(
+                right: 0,
+                bottom: 0,
+                child: Icon(Icons.circle, size: 8, color: Colors.blue),
+              ),
+          ],
         ),
-      );
-    }
-
-    return ListView.builder(
-      itemCount: channelClients.length,
-      itemBuilder: (context, index) {
-        final client = channelClients[index];
-        return ListTile(
-          dense: true,
-          leading: SizedBox(
-            width: 22,
-            height: 22,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                Icon(
-                  _clientIcon(client),
-                  size: 18,
-                  color: _clientColor(client),
-                ),
-                if (client.isTalking)
-                  const Positioned(
-                    right: 0,
-                    bottom: 0,
-                    child: Icon(Icons.circle, size: 8, color: Colors.blue),
-                  ),
-              ],
-            ),
-          ),
-          title: Text(
-            client.nickname,
-            style: TextStyle(
-              color: client.away ? Colors.grey : Colors.white,
-              fontSize: 13,
-            ),
-          ),
-          trailing: _buildStatusIcons(context, client, al),
-          onTap: () => onClientTap?.call(client.id),
-        );
-      },
+      ),
+      title: Text(
+        client.nickname,
+        style: TextStyle(
+          color: client.away ? Colors.grey : Colors.white,
+          fontSize: 13,
+        ),
+      ),
+      trailing: _buildStatusIcons(context, client, al),
+      onTap: onTap,
     );
   }
 

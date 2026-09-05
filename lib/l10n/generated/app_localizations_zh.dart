@@ -68,9 +68,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get channels => '频道';
 
   @override
-  String get users => '用户';
-
-  @override
   String get chat => '聊天';
 
   @override
@@ -92,10 +89,22 @@ class AppLocalizationsZh extends AppLocalizations {
   String get guideChatDesc => '点击聊天栏向当前频道发送消息。';
 
   @override
-  String get guideUsersTitle => '用户列表';
+  String get guideChannelsTitle => '频道';
 
   @override
-  String get guideUsersDesc => '点击其他用户可调节音量或发送 Poke；点击自己的名字会打开与长按麦克风相同的语音设置。';
+  String get guideChannelsDesc => '点击频道加入；长按打开频道菜单（加入、文件管理）。';
+
+  @override
+  String get guideMembersTitle => '成员';
+
+  @override
+  String get guideMembersDesc => '成员直接列在所属频道下方，其他频道的成员也能看到。';
+
+  @override
+  String get guideMemberActionsTitle => '成员操作';
+
+  @override
+  String get guideMemberActionsDesc => '点击他人可调节音量、发送 Poke 或踢出；点击自己的名字打开语音设置。';
 
   @override
   String get keepAliveTitle => '后台保活';
@@ -369,9 +378,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get disconnect => '断开连接';
-
-  @override
-  String get noUsersInChannel => '该频道暂无用户';
 
   @override
   String get noMessagesYet => '暂无消息';

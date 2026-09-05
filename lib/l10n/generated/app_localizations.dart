@@ -212,12 +212,6 @@ abstract class AppLocalizations {
   /// **'Channels'**
   String get channels;
 
-  /// No description provided for @users.
-  ///
-  /// In en, this message translates to:
-  /// **'Users'**
-  String get users;
-
   /// No description provided for @chat.
   ///
   /// In en, this message translates to:
@@ -260,17 +254,41 @@ abstract class AppLocalizations {
   /// **'Tap the chat bar to send messages in your channel.'**
   String get guideChatDesc;
 
-  /// No description provided for @guideUsersTitle.
+  /// No description provided for @guideChannelsTitle.
   ///
   /// In en, this message translates to:
-  /// **'User list'**
-  String get guideUsersTitle;
+  /// **'Channels'**
+  String get guideChannelsTitle;
 
-  /// No description provided for @guideUsersDesc.
+  /// No description provided for @guideChannelsDesc.
   ///
   /// In en, this message translates to:
-  /// **'Tap another user to adjust their volume or poke them. Tap your own name to open the same voice settings as long-pressing the mic.'**
-  String get guideUsersDesc;
+  /// **'Tap a channel to join it; long-press for its menu (join, file manager).'**
+  String get guideChannelsDesc;
+
+  /// No description provided for @guideMembersTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Members'**
+  String get guideMembersTitle;
+
+  /// No description provided for @guideMembersDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Every member is listed under their channel — including members of other channels.'**
+  String get guideMembersDesc;
+
+  /// No description provided for @guideMemberActionsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Member actions'**
+  String get guideMemberActionsTitle;
+
+  /// No description provided for @guideMemberActionsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap someone to adjust volume, poke or kick; tap your own name for voice settings.'**
+  String get guideMemberActionsDesc;
 
   /// No description provided for @keepAliveTitle.
   ///
@@ -811,12 +829,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Disconnect'**
   String get disconnect;
-
-  /// No description provided for @noUsersInChannel.
-  ///
-  /// In en, this message translates to:
-  /// **'No users in this channel'**
-  String get noUsersInChannel;
 
   /// No description provided for @noMessagesYet.
   ///
