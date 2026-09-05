@@ -211,8 +211,10 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     final gestureSwap = ref.watch(
       appSettingsProvider.select((s) => s.channelGestureSwap),
     );
+    // Transparent root so the app-wide custom background shows through
+    // behind the channel tree and the user list; the section headers above
+    // and below stay opaque as visual anchors.
     return Container(
-      color: const Color(0xFF12122A),
       child: Column(
         children: [
           Container(
@@ -383,7 +385,9 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
       onTap: _openChat,
       child: Container(
         height: 36,
-        color: const Color(0xFF16213E),
+        // Translucent so a custom background tints through (same for the
+        // other bars on this screen).
+        color: const Color(0xD916213E),
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Row(
           children: [
@@ -441,7 +445,7 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
 
     return Container(
       height: 52,
-      color: const Color(0xFF16213E),
+      color: const Color(0xD916213E),
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
