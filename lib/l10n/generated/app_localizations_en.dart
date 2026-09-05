@@ -173,7 +173,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get voiceSettings => 'Voice Settings';
 
   @override
-  String get pttMode => 'PTT Mode';
+  String get pttMode => 'PTT Mode (Hold to Talk)';
 
   @override
   String get voiceActivation => 'Voice Activation';
@@ -602,4 +602,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String fmReasonPrefix(String reason) {
     return 'Operation failed: $reason';
   }
+
+  @override
+  String get backgroundSection => 'Background';
+
+  @override
+  String get bgPickImage => 'Pick Image';
+
+  @override
+  String get bgDim => 'Dim';
+
+  @override
+  String get bgReset => 'Reset';
 }

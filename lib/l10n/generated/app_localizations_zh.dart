@@ -168,7 +168,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get voiceSettings => '语音设置';
 
   @override
-  String get pttMode => 'PTT 模式';
+  String get pttMode => 'PTT 模式（按键激活）';
 
   @override
   String get voiceActivation => '语音激活';
@@ -592,4 +592,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String fmReasonPrefix(String reason) {
     return '操作失败：$reason';
   }
+
+  @override
+  String get backgroundSection => '背景';
+
+  @override
+  String get bgPickImage => '选择图片';
+
+  @override
+  String get bgDim => '背景变暗';
+
+  @override
+  String get bgReset => '恢复默认';
 }

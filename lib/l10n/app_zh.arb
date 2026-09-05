@@ -56,7 +56,7 @@
   "languageChinese": "中文",
 
   "voiceSettings": "语音设置",
-  "pttMode": "PTT 模式",
+  "pttMode": "PTT 模式（按键激活）",
   "voiceActivation": "语音激活",
   "level": "电平",
   "micGain": "麦克风增益",
@@ -224,5 +224,9 @@
     "placeholders": {
       "reason": { "type": "String" }
     }
-  }
+  },
+  "backgroundSection": "背景",
+  "bgPickImage": "选择图片",
+  "bgDim": "背景变暗",
+  "bgReset": "恢复默认"
 }

@@ -1,6 +1,10 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Sentinel for [AppSettingsState.copyWith] so a nullable field can be
+/// explicitly reset to null instead of "keep the current value".
+const _sentinel = Object();
+
 /// App-level preference toggles that must be readable from screens without
 /// rebuilding connection state. Values are loaded lazily like the locale
 /// provider: [loaded] flips once disk storage has been consulted, so callers
@@ -9,22 +13,43 @@ class AppSettingsState {
   /// false = short tap joins a channel, long press opens its menu (default).
   /// true = the two are swapped.
   final bool channelGestureSwap;
+
+  /// Absolute path of the user-custom background image, or null when the
+  /// app uses its built-in solid colors.
+  final String? backgroundPath;
+
+  /// Darkening overlay opacity (0–0.8) applied on top of the background
+  /// image so light wallpapers keep text readable.
+  final double backgroundDim;
+
   final bool loaded;
 
   const AppSettingsState({
     this.channelGestureSwap = false,
+    this.backgroundPath,
+    this.backgroundDim = 0.4,
     this.loaded = false,
   });
 
-  AppSettingsState copyWith({bool? channelGestureSwap, bool? loaded}) =>
-      AppSettingsState(
-        channelGestureSwap: channelGestureSwap ?? this.channelGestureSwap,
-        loaded: loaded ?? this.loaded,
-      );
+  AppSettingsState copyWith({
+    bool? channelGestureSwap,
+    Object? backgroundPath = _sentinel,
+    double? backgroundDim,
+    bool? loaded,
+  }) => AppSettingsState(
+    channelGestureSwap: channelGestureSwap ?? this.channelGestureSwap,
+    backgroundPath: backgroundPath == _sentinel
+        ? this.backgroundPath
+        : backgroundPath as String?,
+    backgroundDim: backgroundDim ?? this.backgroundDim,
+    loaded: loaded ?? this.loaded,
+  );
 }
 
 class AppSettingsNotifier extends Notifier<AppSettingsState> {
   static const _kGestureSwap = 'channel_gesture_swap';
+  static const _kBackgroundPath = 'custom_bg_path';
+  static const _kBackgroundDim = 'custom_bg_dim';
 
   @override
   AppSettingsState build() {
@@ -41,6 +66,8 @@ class AppSettingsNotifier extends Notifier<AppSettingsState> {
     if (state.loaded) return;
     state = state.copyWith(
       channelGestureSwap: prefs.getBool(_kGestureSwap) ?? false,
+      backgroundPath: prefs.getString(_kBackgroundPath),
+      backgroundDim: prefs.getDouble(_kBackgroundDim) ?? 0.4,
       loaded: true,
     );
   }
@@ -49,6 +76,24 @@ class AppSettingsNotifier extends Notifier<AppSettingsState> {
     state = state.copyWith(channelGestureSwap: swap);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kGestureSwap, swap);
+  }
+
+  Future<void> setBackground(String path) async {
+    state = state.copyWith(backgroundPath: path);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kBackgroundPath, path);
+  }
+
+  Future<void> clearBackground() async {
+    state = state.copyWith(backgroundPath: null);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kBackgroundPath);
+  }
+
+  Future<void> setBackgroundDim(double dim) async {
+    state = state.copyWith(backgroundDim: dim.clamp(0.0, 0.8));
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_kBackgroundDim, dim);
   }
 }
 

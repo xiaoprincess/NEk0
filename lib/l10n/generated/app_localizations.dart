@@ -413,7 +413,7 @@ abstract class AppLocalizations {
   /// No description provided for @pttMode.
   ///
   /// In en, this message translates to:
-  /// **'PTT Mode'**
+  /// **'PTT Mode (Hold to Talk)'**
   String get pttMode;
 
   /// No description provided for @voiceActivation.
@@ -1231,6 +1231,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Operation failed: {reason}'**
   String fmReasonPrefix(String reason);
+
+  /// No description provided for @backgroundSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Background'**
+  String get backgroundSection;
+
+  /// No description provided for @bgPickImage.
+  ///
+  /// In en, this message translates to:
+  /// **'Pick Image'**
+  String get bgPickImage;
+
+  /// No description provided for @bgDim.
+  ///
+  /// In en, this message translates to:
+  /// **'Dim'**
+  String get bgDim;
+
+  /// No description provided for @bgReset.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset'**
+  String get bgReset;
 }
 
 class _AppLocalizationsDelegate

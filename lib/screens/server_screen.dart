@@ -134,7 +134,6 @@ class _ServerScreenState extends ConsumerState<ServerScreen> {
     final connNotifier = ref.read(tsConnectionProvider.notifier);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F23),
       body: SafeArea(
         child: Column(
           children: [

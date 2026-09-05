@@ -61,7 +61,7 @@
   "languageChinese": "中文",
 
   "voiceSettings": "Voice Settings",
-  "pttMode": "PTT Mode",
+  "pttMode": "PTT Mode (Hold to Talk)",
   "voiceActivation": "Voice Activation",
   "level": "Level",
   "micGain": "Mic Gain",
@@ -244,5 +244,9 @@
     "placeholders": {
       "reason": { "type": "String" }
     }
-  }
+  },
+  "backgroundSection": "Background",
+  "bgPickImage": "Pick Image",
+  "bgDim": "Dim",
+  "bgReset": "Reset"
 }
